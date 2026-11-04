@@ -1,0 +1,968 @@
+"use client";
+
+import {
+  Maximize2,
+  Minus,
+  Plus,
+  Save,
+  Sparkles,
+  SlidersHorizontal,
+  Volume2,
+  Waves,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useAcademy } from "@/components/providers/academy-provider";
+import { PianoKeyboard } from "@/components/studio/piano-keyboard";
+import { StaffVisor } from "@/components/studio/staff-visor";
+import { SectionHeading } from "@/components/ui/section-heading";
+import { SKILL_META, getLevel, type Skill } from "@/lib/academy";
+import type { EnginePreset } from "@/lib/audio-engine";
+import {
+  analyzeHarmony,
+  chordMidis,
+  type HarmonyAnalysis,
+  type NamingMode,
+} from "@/lib/harmony";
+import { useAudioEngine } from "@/lib/use-audio-engine";
+import { useMidiInput } from "@/lib/use-midi";
+import { cn } from "@/lib/utils";
+
+type ViewMode = "one" | "half" | "two";
+
+const VIEW_OPTIONS: Array<{
+  id: ViewMode | "full";
+  label: string;
+  hint: string;
+}> = [
+  { id: "one", label: "1 Octava", hint: "Grande" },
+  { id: "half", label: "1.5 Octavas", hint: "Medio" },
+  { id: "two", label: "2 Octavas", hint: "Amplio" },
+  { id: "full", label: "Pantalla", hint: "Completa" },
+];
+
+function rangeLabel(octaves: 1 | 1.5 | 2) {
+  if (octaves === 1) return "C4 — C5";
+  if (octaves === 1.5) return "C4 — F5";
+  return "C4 — C6";
+}
+
+function octaveWord(octaves: 1 | 1.5 | 2) {
+  return octaves === 1 ? "1 octava" : `${octaves} octavas`;
+}
+
+const NAMING_OPTIONS: Array<{
+  id: NamingMode;
+  label: string;
+  hint: string;
+  full: string;
+}> = [
+  { id: "solfege", label: "Do-Re-Mi", hint: "Solfeo", full: "Do-Re-Mi" },
+  { id: "letters", label: "C-D-E", hint: "Cifrado", full: "C-D-E" },
+  {
+    id: "degrees",
+    label: "Grados",
+    hint: "1-3-5",
+    full: "Grados Funcionales (1-3-5)",
+  },
+  {
+    id: "clean",
+    label: "Limpias",
+    hint: "Examen",
+    full: "Teclas Limpias (Modo Examen)",
+  },
+];
+
+const PRESETS: Array<{ id: EnginePreset; label: string }> = [
+  { id: "rhodes", label: "Rhodes" },
+  { id: "grand", label: "Gran Piano" },
+  { id: "glass", label: "Cristal" },
+];
+
+const CHORD_PADS = [
+  { name: "Cmaj7", degree: "I∆7", root: 0, intervals: [0, 4, 7, 11] },
+  { name: "Am7", degree: "vi7", root: 9, intervals: [0, 3, 7, 10] },
+  { name: "Fmaj7", degree: "IV∆7", root: 5, intervals: [0, 4, 7, 11] },
+  { name: "G7", degree: "V7", root: 7, intervals: [0, 4, 7, 10] },
+] as const;
+
+const QWERTY: Record<string, number> = {
+  KeyA: 0,
+  KeyW: 1,
+  KeyS: 2,
+  KeyE: 3,
+  KeyD: 4,
+  KeyF: 5,
+  KeyT: 6,
+  KeyG: 7,
+  KeyY: 8,
+  KeyH: 9,
+  KeyU: 10,
+  KeyJ: 11,
+  KeyK: 12,
+  KeyO: 13,
+  KeyL: 14,
+  KeyP: 15,
+  Semicolon: 16,
+};
+
+function formatTimer(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+}
+
+export function KeyboardStudio({ active = true }: { active?: boolean }) {
+  const { activeStudent, logPractice, reportLiveActivity } = useAcademy();
+  // The keyboard stays explorable with no profile; practice is simply not saved.
+  const level = getLevel(activeStudent?.currentLevel ?? 1);
+  const audio = useAudioEngine();
+
+  const [preset, setPreset] = useState<EnginePreset>("rhodes");
+  const [volume, setVolume] = useState(72);
+  const [sustain, setSustain] = useState(false);
+  const [octave, setOctave] = useState(4);
+  const [view, setView] = useState<ViewMode>("one");
+  const [naming, setNaming] = useState<NamingMode>("solfege");
+  const [activeMidis, setActiveMidis] = useState<Set<number>>(new Set());
+  const [padMidis, setPadMidis] = useState<number[]>([]);
+  const [playingPad, setPlayingPad] = useState<string | null>(null);
+  const [lastHarmony, setLastHarmony] = useState<HarmonyAnalysis | null>(null);
+  const [seconds, setSeconds] = useState(0);
+  const [started, setStarted] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [skill, setSkill] = useState<Skill>(
+    level.focus === "melody" || level.focus === "rhythm"
+      ? level.focus
+      : "harmony",
+  );
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenOctaves, setFullscreenOctaves] = useState<1 | 1.5 | 2>(2);
+  const [mounted, setMounted] = useState(false);
+  const [portrait, setPortrait] = useState(false);
+  const [prefsReady, setPrefsReady] = useState(false);
+
+  const padTimerRef = useRef<number | null>(null);
+  const holdersRef = useRef<Map<number, Set<string>>>(new Map());
+  const audioRef = useRef(audio);
+  audioRef.current = audio;
+
+  const midi = useMidiInput(
+    {
+      onNoteOn: (note, velocity) => press(note, velocity, `midi:${note}`),
+      onNoteOff: (note) => release(note, `midi:${note}`),
+      onSustain: (on) => setSustain(on),
+    },
+    active,
+  );
+
+  useEffect(() => {
+    audio.setVolume(volume);
+  }, [audio, volume]);
+
+  useEffect(() => {
+    audio.setPreset(preset);
+  }, [audio, preset]);
+
+  useEffect(() => {
+    audio.setSustain(sustain);
+  }, [audio, sustain]);
+
+  useEffect(() => {
+    reportLiveActivity({
+      levelId: level.id,
+      exercise: "Teclado libre",
+      skill,
+    });
+  }, [level.id, reportLiveActivity, skill]);
+
+  useEffect(() => {
+    reportLiveActivity({
+      practicing: started,
+      keyLabel: lastHarmony?.label ?? null,
+    });
+  }, [lastHarmony?.label, reportLiveActivity, started]);
+
+  useEffect(() => {
+    if (!started) return;
+    const timer = window.setInterval(() => {
+      setSeconds((value) => Math.min(3599, value + 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [started]);
+
+  useEffect(() => {
+    return () => {
+      if (padTimerRef.current) window.clearTimeout(padTimerRef.current);
+      audioRef.current.releaseAll();
+    };
+  }, []);
+
+  useEffect(() => {
+    try {
+      const savedView = localStorage.getItem("leo.keyboardView");
+      if (savedView === "one" || savedView === "half" || savedView === "two") {
+        setView(savedView);
+      }
+      const savedNaming = localStorage.getItem("leo.keyboardNaming");
+      if (
+        savedNaming === "solfege" ||
+        savedNaming === "letters" ||
+        savedNaming === "degrees" ||
+        savedNaming === "clean"
+      ) {
+        setNaming(savedNaming);
+      }
+    } catch {
+      /* Private mode. */
+    }
+    setPrefsReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!prefsReady) return;
+    try {
+      localStorage.setItem("leo.keyboardView", view);
+      localStorage.setItem("leo.keyboardNaming", naming);
+    } catch {
+      /* Private mode. */
+    }
+  }, [prefsReady, view, naming]);
+
+  useEffect(() => setMounted(true), []);
+
+  useEffect(() => {
+    const check = () => {
+      setPortrait(
+        window.innerHeight > window.innerWidth && window.innerWidth < 900,
+      );
+    };
+    check();
+    window.addEventListener("resize", check);
+    window.addEventListener("orientationchange", check);
+    return () => {
+      window.removeEventListener("resize", check);
+      window.removeEventListener("orientationchange", check);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.dataset.pianoFullscreen = "true";
+    return () => {
+      document.body.style.overflow = previous;
+      delete document.documentElement.dataset.pianoFullscreen;
+    };
+  }, [fullscreen]);
+
+  const press = useCallback(
+    (midiNote: number, velocity: number, source: string) => {
+      const holders = holdersRef.current;
+      let sources = holders.get(midiNote);
+      if (!sources) {
+        sources = new Set();
+        holders.set(midiNote, sources);
+      }
+      const wasEmpty = sources.size === 0;
+      sources.add(source);
+      if (wasEmpty) audio.noteOn(midiNote, velocity);
+      setActiveMidis(new Set(holders.keys()));
+      setStarted(true);
+    },
+    [audio],
+  );
+
+  const release = useCallback(
+    (midiNote: number, source: string) => {
+      const holders = holdersRef.current;
+      const sources = holders.get(midiNote);
+      if (!sources) return;
+      sources.delete(source);
+      if (sources.size === 0) {
+        holders.delete(midiNote);
+        audio.noteOff(midiNote);
+      }
+      setActiveMidis(new Set(holders.keys()));
+    },
+    [audio],
+  );
+
+  const clearHeld = useCallback(() => {
+    holdersRef.current.clear();
+    setActiveMidis(new Set());
+    setPadMidis([]);
+    setPlayingPad(null);
+    audio.releaseAll();
+    if (padTimerRef.current) window.clearTimeout(padTimerRef.current);
+  }, [audio]);
+
+  useEffect(() => {
+    if (active) return;
+    if (
+      holdersRef.current.size === 0 &&
+      padMidis.length === 0 &&
+      playingPad === null
+    ) {
+      return;
+    }
+    clearHeld();
+  }, [active, clearHeld, padMidis.length, playingPad]);
+
+  const displayMidis = useMemo(
+    () =>
+      [...new Set([...activeMidis, ...padMidis])].sort((a, b) => a - b),
+    [activeMidis, padMidis],
+  );
+
+  const harmony = useMemo(
+    () => analyzeHarmony(displayMidis),
+    [displayMidis],
+  );
+
+  useEffect(() => {
+    if (harmony.kind === "silence") return;
+    // Debounce every fragment: while a chord is released note by note, the
+    // intermediate triads/intervals never live long enough to replace the
+    // ghost. A chord held for a moment does.
+    const timer = window.setTimeout(() => setLastHarmony(harmony), 260);
+    return () => window.clearTimeout(timer);
+  }, [harmony]);
+
+  const ghostMidis =
+    harmony.kind === "silence" ? (lastHarmony?.notes ?? []) : [];
+
+  const changeOctave = (delta: number) => {
+    clearHeld();
+    setOctave((value) => Math.min(6, Math.max(2, value + delta)));
+  };
+
+  const changeView = (next: ViewMode) => {
+    clearHeld();
+    setView(next);
+  };
+
+  const enterImmersive = useCallback(async () => {
+    clearHeld();
+    audio.unlock();
+    setFullscreen(true);
+    try {
+      const orientation = screen.orientation as ScreenOrientation & {
+        lock?: (orientation: string) => Promise<void>;
+      };
+      await orientation.lock?.("landscape");
+    } catch {
+      /* Orientation lock is optional; CSS rotation covers phones. */
+    }
+  }, [audio, clearHeld]);
+
+  const exitImmersive = useCallback(() => {
+    clearHeld();
+    setFullscreen(false);
+    try {
+      screen.orientation?.unlock?.();
+    } catch {
+      /* Ignore. */
+    }
+  }, [clearHeld]);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") exitImmersive();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [exitImmersive, fullscreen]);
+
+  useEffect(() => {
+    if (!active) return;
+    const down = (event: KeyboardEvent) => {
+      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target instanceof Element &&
+        target.closest("input, textarea, select, [contenteditable='true']")
+      ) {
+        return;
+      }
+      const offset = QWERTY[event.code];
+      if (offset === undefined) return;
+      event.preventDefault();
+      press((octave + 1) * 12 + offset, 0.78, `qwerty:${event.code}`);
+    };
+    const up = (event: KeyboardEvent) => {
+      const offset = QWERTY[event.code];
+      if (offset === undefined) return;
+      release((octave + 1) * 12 + offset, `qwerty:${event.code}`);
+    };
+    const blur = () => {
+      for (const [midiNote, sources] of holdersRef.current) {
+        for (const source of [...sources]) {
+          if (source.startsWith("qwerty:")) release(midiNote, source);
+        }
+      }
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+      blur();
+    };
+  }, [active, octave, press, release]);
+
+  const playPad = (pad: (typeof CHORD_PADS)[number]) => {
+    if (padTimerRef.current) window.clearTimeout(padTimerRef.current);
+    const notes = chordMidis(pad.root, [...pad.intervals], octave);
+    audio.playChord(notes, 2, 0.76);
+    setPadMidis(notes);
+    setPlayingPad(pad.name);
+    setStarted(true);
+    padTimerRef.current = window.setTimeout(() => {
+      setPadMidis([]);
+      setPlayingPad(null);
+    }, 1900);
+  };
+
+  const saveSession = async () => {
+    if (saving) return;
+    setSaving(true);
+    const minutes = Math.max(1, Math.ceil(seconds / 60));
+    await logPractice({
+      levelId: level.id,
+      minutes,
+      skill,
+      score: Math.round(72 + Math.min(20, minutes * 2)),
+    });
+    setSeconds(0);
+    setStarted(false);
+    setSaving(false);
+  };
+
+  const octaves: 1 | 1.5 | 2 =
+    view === "two" ? 2 : view === "half" ? 1.5 : 1;
+  const startMidi = (octave + 1) * 12;
+  const namingMeta = NAMING_OPTIONS.find((option) => option.id === naming)!;
+
+  const midiLabel = !midi.supported
+    ? "MIDI · sin soporte"
+    : midi.status === "ready"
+      ? (midi.devices[0] ?? "MIDI conectado")
+      : midi.status === "requesting"
+        ? "MIDI · buscando"
+        : midi.status === "denied"
+          ? "MIDI · bloqueado"
+          : "MIDI · toca para conectar";
+  const midiTone =
+    midi.status === "ready"
+      ? "text-glow"
+      : midi.status === "denied"
+        ? "text-ember/90"
+        : "text-faint";
+
+  const harmonyLive = harmony.kind !== "silence";
+  const hudLabel = harmonyLive ? harmony.label : (lastHarmony?.label ?? "Silencio");
+
+  return (
+    <div className="space-y-4">
+      <StaffVisor
+        activeMidis={displayMidis}
+        ghostMidis={ghostMidis}
+        naming={naming}
+        analyser={audio.analyser}
+        ready={audio.ready}
+        lastHarmony={lastHarmony}
+      />
+
+      <div className="grid gap-2">
+        <div className="neu-inset rounded-[18px] p-2.5">
+          <div className="flex items-center justify-between">
+            <p className="eyebrow text-[6.5px]">Vista del teclado</p>
+            <span className="text-[6px] font-semibold uppercase tracking-[0.12em] text-faint/70">
+              {rangeLabel(octaves)}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-1">
+            {VIEW_OPTIONS.map((option) => {
+              const activeOption =
+                option.id === "full" ? fullscreen : !fullscreen && view === option.id;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => {
+                    if (option.id === "full") void enterImmersive();
+                    else changeView(option.id);
+                  }}
+                  aria-pressed={activeOption}
+                  title={
+                    option.id === "full"
+                      ? "Pantalla Completa"
+                      : option.id === "one"
+                        ? "1 Octava Grande"
+                        : option.id === "half"
+                          ? "1.5 Octavas"
+                          : "2 Octavas"
+                  }
+                  className={cn(
+                    "flex min-h-[38px] flex-col items-center justify-center gap-0.5 rounded-[10px] border px-1 py-1 transition-all duration-300",
+                    activeOption
+                      ? "border-cyan-300/25 bg-white/[0.06] text-ivory shadow-[inset_0_0_0_1px_rgba(56,189,248,0.08)]"
+                      : "border-transparent text-faint hover:bg-white/[0.025] hover:text-muted",
+                  )}
+                >
+                  <span className="text-[8px] font-semibold tracking-[0.04em]">
+                    {option.label}
+                  </span>
+                  <span
+                    className={cn(
+                      "text-[5.5px] font-semibold uppercase tracking-[0.12em]",
+                      activeOption ? "text-glow/80" : "text-faint/60",
+                    )}
+                  >
+                    {option.hint}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="neu-inset rounded-[18px] p-2.5">
+          <div className="flex items-center justify-between">
+            <p className="eyebrow text-[6.5px]">Nomenclatura</p>
+            <span className="text-[6px] font-semibold uppercase tracking-[0.12em] text-faint/70">
+              {namingMeta.full}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-4 gap-1">
+            {NAMING_OPTIONS.map((option) => {
+              const activeOption = naming === option.id;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setNaming(option.id)}
+                  aria-pressed={activeOption}
+                  title={option.full}
+                  className={cn(
+                    "flex min-h-[34px] flex-col items-center justify-center gap-0.5 rounded-[9px] border px-0.5 py-1 transition-all duration-300",
+                    activeOption
+                      ? "border-cyan-300/25 bg-white/[0.06] text-ivory"
+                      : "border-transparent text-faint hover:bg-white/[0.025] hover:text-muted",
+                  )}
+                >
+                  <span className="text-[7.5px] font-semibold">
+                    {option.label}
+                  </span>
+                  <span
+                    className={cn(
+                      "text-[5px] font-semibold uppercase tracking-[0.1em]",
+                      activeOption ? "text-glow/75" : "text-faint/55",
+                    )}
+                  >
+                    {option.hint}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="keyboard-stage neu-card relative rounded-[26px] p-3">
+        <span className="keyboard-screw left-1.5 top-1.5" aria-hidden />
+        <span className="keyboard-screw right-1.5 top-1.5" aria-hidden />
+        <span className="keyboard-screw bottom-1.5 left-1.5" aria-hidden />
+        <span className="keyboard-screw bottom-1.5 right-1.5" aria-hidden />
+
+        <div className="relative flex items-center justify-between gap-2 px-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className={cn(
+                "h-1.5 w-1.5 flex-none rounded-full transition-all duration-500",
+                audio.ready
+                  ? "bg-cyan-300 shadow-[0_0_8px_rgba(56,189,248,0.8)]"
+                  : "bg-white/15",
+              )}
+            />
+            <span className="truncate text-[7px] font-semibold uppercase tracking-[0.24em] text-faint/85">
+              Sapphire Keys
+            </span>
+            <span className="hidden text-[6px] font-semibold uppercase tracking-[0.14em] text-faint/45 min-[370px]:inline">
+              · {octaveWord(octaves)}
+            </span>
+          </div>
+          <div className="flex flex-none items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => void midi.connect()}
+              disabled={!midi.supported}
+              title={midiLabel}
+              className={cn(
+                "flex items-center gap-1 rounded-full border border-white/[0.06] bg-black/20 px-2 py-1 text-[5.5px] font-semibold uppercase tracking-[0.1em] transition-colors hover:border-white/10 disabled:opacity-60",
+                midiTone,
+              )}
+            >
+              <span
+                className={cn(
+                  "h-1 w-1 rounded-full",
+                  midi.status === "ready" ? "bg-cyan-300" : "bg-current",
+                )}
+              />
+              <span className="max-w-[74px] truncate">
+                {midi.status === "ready" ? midiLabel : "MIDI"}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void enterImmersive()}
+              aria-label="Pantalla Completa"
+              title="Pantalla Completa"
+              className="neu-icon h-7 w-7 rounded-[9px]"
+            >
+              <Maximize2 size={11} />
+            </button>
+          </div>
+        </div>
+
+        <div className="piano-frame neu-inset relative mt-2 overflow-hidden rounded-[18px] p-2">
+          <div className="keyboard-felt" aria-hidden />
+          <div className="keyboard-ledge" aria-hidden />
+          <PianoKeyboard
+            startMidi={startMidi}
+            octaves={octaves}
+            naming={naming}
+            activeMidis={activeMidis}
+            onPress={press}
+            onRelease={release}
+          />
+        </div>
+
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+          <div className="neu-pill h-9 gap-0 p-1">
+            <button
+              type="button"
+              onClick={() => changeOctave(-1)}
+              disabled={octave <= 2}
+              aria-label="Bajar una octava"
+              className="grid h-7 w-7 place-items-center rounded-[9px] text-muted transition-colors hover:bg-white/5 hover:text-ivory disabled:opacity-30"
+            >
+              <Minus size={12} />
+            </button>
+            <span className="min-w-[34px] text-center font-display text-[10px] text-ivory">
+              OCT {octave}
+            </span>
+            <button
+              type="button"
+              onClick={() => changeOctave(1)}
+              disabled={octave >= 6}
+              aria-label="Subir una octava"
+              className="grid h-7 w-7 place-items-center rounded-[9px] text-muted transition-colors hover:bg-white/5 hover:text-ivory disabled:opacity-30"
+            >
+              <Plus size={12} />
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setSustain((value) => !value)}
+            aria-pressed={sustain}
+            className={cn(
+              "neu-button h-9 min-h-0 rounded-[12px] px-2.5 text-[8px]",
+              sustain && "border-cyan-300/30 text-glow",
+            )}
+          >
+            <Waves size={12} />
+            Pedal
+          </button>
+
+          <div className="ml-auto flex items-center gap-0.5 rounded-[11px] border border-white/[0.05] bg-black/20 p-0.5">
+            {PRESETS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setPreset(option.id)}
+                aria-pressed={preset === option.id}
+                className={cn(
+                  "rounded-[8px] px-1.5 py-1.5 text-[6.5px] font-semibold uppercase tracking-[0.08em] transition-all duration-300",
+                  preset === option.id
+                    ? "bg-white/[0.08] text-ivory shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
+                    : "text-faint hover:text-muted",
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-2 flex items-center gap-2.5 px-1">
+          <Volume2 size={12} className="flex-none text-faint" />
+          <input
+            className="range-neu h-[6px]"
+            type="range"
+            min={0}
+            max={100}
+            value={volume}
+            onChange={(event) => setVolume(Number(event.target.value))}
+            aria-label="Volumen del sintetizador"
+          />
+          <span className="w-7 flex-none text-right text-[8px] font-semibold tabular-nums text-faint">
+            {volume}%
+          </span>
+        </div>
+      </div>
+
+      {fullscreen &&
+        mounted &&
+        createPortal(
+          <div
+            className="piano-fullscreen fixed inset-0 z-[100] h-[100dvh] w-[100dvw] overflow-hidden bg-[#050B14]"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Piano en pantalla completa"
+          >
+            <div
+              className={cn(
+                "absolute left-1/2 top-1/2 flex flex-col",
+                portrait ? "origin-center" : "h-full w-full",
+              )}
+              style={
+                portrait
+                  ? {
+                      width: "100dvh",
+                      height: "100dvw",
+                      transform: "translate(-50%, -50%) rotate(90deg)",
+                    }
+                  : undefined
+              }
+            >
+              <div className="flex flex-none flex-wrap items-center gap-x-2 gap-y-1 border-b border-white/[0.06] bg-[#06101c]/95 px-2.5 py-1.5">
+                <div className="flex items-center gap-0.5 rounded-full border border-white/[0.06] bg-black/30 p-0.5">
+                  {([1, 1.5, 2] as const).map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setFullscreenOctaves(value)}
+                      aria-pressed={fullscreenOctaves === value}
+                      title={`${octaveWord(value)}`}
+                      className={cn(
+                        "rounded-full px-2.5 py-1 text-[9px] font-semibold transition-colors",
+                        fullscreenOctaves === value
+                          ? "bg-white/[0.1] text-ivory"
+                          : "text-faint hover:text-muted",
+                      )}
+                    >
+                      {value}
+                      <span className="ml-1 text-[6px] uppercase tracking-wider opacity-70">
+                        oct
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-0.5 rounded-full border border-white/[0.06] bg-black/30 p-0.5">
+                  {PRESETS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setPreset(option.id)}
+                      aria-pressed={preset === option.id}
+                      className={cn(
+                        "rounded-full px-2.5 py-1 text-[8px] font-semibold uppercase tracking-[0.06em] transition-colors",
+                        preset === option.id
+                          ? "bg-white/[0.1] text-ivory"
+                          : "text-faint hover:text-muted",
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setSustain((value) => !value)}
+                  aria-pressed={sustain}
+                  className={cn(
+                    "flex items-center gap-1 rounded-full border border-white/[0.06] bg-black/30 px-2.5 py-1 text-[8px] font-semibold uppercase tracking-[0.06em] transition-colors",
+                    sustain ? "text-glow" : "text-faint hover:text-muted",
+                  )}
+                >
+                  <Waves size={10} />
+                  Pedal
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => exitImmersive()}
+                  className="ml-auto flex flex-none items-center gap-1.5 rounded-full border border-white/[0.1] bg-white/[0.05] px-3 py-1.5 text-[8.5px] font-semibold text-ivory transition-colors hover:bg-white/[0.09]"
+                >
+                  <X size={11} />
+                  Salir de Pantalla Completa
+                </button>
+              </div>
+
+              <div className="flex min-h-0 flex-1 flex-col px-2 pb-2 pt-2">
+                <div className="mx-auto flex h-[82%] min-h-0 w-full max-w-[1500px]">
+                  <div className="piano-frame neu-inset relative w-full overflow-hidden rounded-[16px] p-2">
+                    <div className="keyboard-felt" aria-hidden />
+                    <div className="keyboard-ledge" aria-hidden />
+                    <PianoKeyboard
+                      startMidi={startMidi}
+                      octaves={fullscreenOctaves}
+                      naming={naming}
+                      activeMidis={activeMidis}
+                      onPress={press}
+                      onRelease={release}
+                      immersive
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-auto flex flex-wrap items-center justify-between gap-2 px-1 pt-2">
+                  <div className="min-w-0">
+                    <p className="text-[6px] font-semibold uppercase tracking-[0.18em] text-faint">
+                      {harmonyLive ? "Sonando" : "Último acorde"}
+                    </p>
+                    <p className="truncate font-display text-[20px] leading-none text-ivory">
+                      {hudLabel}
+                    </p>
+                  </div>
+                  <p className="text-right text-[7px] font-semibold uppercase tracking-[0.14em] text-faint/70">
+                    {rangeLabel(fullscreenOctaves)}
+                    <span className="ml-2 text-faint/50">OCT {octave}</span>
+                    {portrait && (
+                      <span className="ml-2 text-glow/70">Gira el teléfono</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      <section aria-labelledby="acompanamiento">
+        <SectionHeading
+          index="01"
+          title="Acompañamiento"
+          meta={
+            <span className="flex items-center gap-1 text-[7px] font-semibold uppercase tracking-[0.15em] text-faint">
+              <SlidersHorizontal size={9} />
+              Toca un acorde
+            </span>
+          }
+        />
+        <div className="mt-3 grid grid-cols-4 gap-1.5">
+          {CHORD_PADS.map((pad) => (
+            <button
+              key={pad.name}
+              type="button"
+              onClick={() => playPad(pad)}
+              aria-label={`Tocar acorde ${pad.name}`}
+              className={cn(
+                "neu-button h-[54px] flex-col gap-0.5 rounded-[14px] px-1 py-2",
+                playingPad === pad.name &&
+                  "border-cyan-300/35 text-glow shadow-[inset_4px_4px_10px_#03070D,inset_-3px_-3px_8px_rgba(56,189,248,0.12),0_0_24px_rgba(56,189,248,0.12)]",
+              )}
+            >
+              <span className="font-display text-[12.5px] leading-none">
+                {pad.name}
+              </span>
+              <span
+                className={cn(
+                  "text-[6px] font-semibold uppercase tracking-[0.12em]",
+                  playingPad === pad.name ? "text-glow/80" : "text-faint",
+                )}
+              >
+                {pad.degree}
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section
+        className="neu-card overflow-hidden rounded-[22px]"
+        aria-label="Guardar sesión de estudio"
+      >
+        <div className="flex items-center gap-3 p-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[7px] font-semibold uppercase tracking-[0.18em] text-faint">
+                Sesión de estudio
+              </span>
+              {started && (
+                <span className="h-1 w-1 animate-dot-pulse rounded-full bg-glow" />
+              )}
+            </div>
+            <div className="mt-1.5 flex items-baseline gap-2">
+              <span className="font-display text-[26px] leading-none tabular-nums text-ivory">
+                {formatTimer(seconds)}
+              </span>
+              <span className="text-[7.5px] font-semibold uppercase tracking-[0.12em] text-faint">
+                {started ? "en curso" : seconds > 0 ? "pausada" : "lista"}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void saveSession()}
+            disabled={saving || (seconds === 0 && !started)}
+            className="neu-button neu-button--primary h-10 min-h-0 rounded-[13px] px-3.5 text-[10px]"
+          >
+            <Save size={13} />
+            {saving ? "Guardando…" : `Guardar ${Math.max(1, Math.ceil(seconds / 60))} min`}
+          </button>
+        </div>
+        <div className="border-t border-white/[0.055] px-4 py-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[7px] font-semibold uppercase tracking-[0.16em] text-faint">
+              Trabajando
+            </span>
+            <span className="text-[7.5px] text-faint/70">{level.title}</span>
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-1.5">
+            {(["melody", "harmony", "rhythm"] as Skill[]).map((option) => {
+              const meta = SKILL_META[option];
+              const isActive = skill === option;
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => setSkill(option)}
+                  aria-pressed={isActive}
+                  className={cn(
+                    "rounded-[10px] border px-2 py-1.5 text-[7.5px] font-semibold uppercase tracking-[0.1em] transition-all duration-300",
+                    isActive
+                      ? "border-white/10 bg-white/[0.055] text-ivory"
+                      : "border-transparent text-faint hover:bg-white/[0.025]",
+                  )}
+                  style={
+                    isActive
+                      ? { boxShadow: `inset 0 0 0 1px ${meta.color}33` }
+                      : undefined
+                  }
+                >
+                  {meta.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      <p className="flex items-center justify-center gap-1.5 pb-1 text-center text-[6.5px] uppercase tracking-[0.16em] text-faint/55">
+        <Sparkles size={8} className="text-glow/60" />
+        También responde a tu teclado físico · A W S E D F T G Y H U J
+      </p>
+    </div>
+  );
+}

@@ -1,0 +1,41 @@
+{
+  "name": "leo-academy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sapphire Tactile Neumorphism piano & theory academy — offline-first PWA",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "node scripts/drizzle-kit.mjs generate",
+    "db:studio": "node scripts/drizzle-kit.mjs studio",
+    "icons": "node scripts/generate-icons.mjs"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.15.15",
+    "clsx": "^2.1.1",
+    "dexie": "4.4.7",
+    "dexie-react-hooks": "4.4.0",
+    "drizzle-orm": "0.45.4",
+    "framer-motion": "14.9.0",
+    "lucide-react": "1.66.0",
+    "next": "16.4.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "server-only": "^0.0.1",
+    "tailwind-merge": "^3.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "autoprefixer": "^10.4.21",
+    "drizzle-kit": "0.31.11",
+    "postcss": "^8.5.6",
+    "sharp": "^0.34.3",
+    "tailwindcss": "3.4.19",
+    "typescript": "^5.9.2"
+  }
+}
