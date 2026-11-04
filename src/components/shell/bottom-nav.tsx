@@ -15,18 +15,13 @@ import { cn } from "@/lib/utils";
 const TABS: Array<{
   href: string;
   label: string;
-  hint: string;
   icon: LucideIcon;
+  center?: boolean;
 }> = [
-  { href: "/mapa", label: "Mapa", hint: "Niveles", icon: Map },
-  { href: "/estudio", label: "Estudio", hint: "Teclado", icon: Piano },
-  { href: "/juegos", label: "Juegos", hint: "Oído", icon: Gamepad2 },
-  {
-    href: "/profesor",
-    label: "Profesor",
-    hint: "Mesa",
-    icon: GraduationCap,
-  },
+  { href: "/mapa", label: "Mapa", icon: Map },
+  { href: "/juegos", label: "Juegos", icon: Gamepad2 },
+  { href: "/estudio", label: "Estudio", icon: Piano, center: true },
+  { href: "/profesor", label: "Profesor", icon: GraduationCap },
 ];
 
 export function BottomNav() {
@@ -35,65 +30,85 @@ export function BottomNav() {
   return (
     <nav
       aria-label="Navegación principal"
-      className="pointer-events-none fixed inset-x-0 bottom-0 z-40 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+12px)]"
+      className="bottom-nav pointer-events-auto fixed inset-x-3 bottom-3 z-40 mx-auto flex h-16 max-w-md items-center justify-around rounded-full border border-white/10 bg-[#0B111D]/90 px-2 pb-[env(safe-area-inset-bottom)] shadow-2xl shadow-black/80 backdrop-blur-2xl"
     >
-      <div className="bottom-nav pointer-events-auto mx-auto flex w-full max-w-[520px] items-stretch gap-0.5 rounded-[25px] p-1.5">
-        {TABS.map((tab) => {
-          const active =
-            pathname === tab.href || pathname.startsWith(`${tab.href}/`);
-          const Icon = tab.icon;
+      {TABS.map((tab) => {
+        const active =
+          pathname === tab.href || pathname.startsWith(`${tab.href}/`);
+        const Icon = tab.icon;
 
+        if (tab.center) {
           return (
             <Link
               key={tab.href}
               href={tab.href}
               aria-current={active ? "page" : undefined}
-              aria-label={`${tab.label} · ${tab.hint}`}
+              aria-label={tab.label}
               onClick={() => {
                 if (typeof navigator !== "undefined" && "vibrate" in navigator) {
                   navigator.vibrate?.(6);
                 }
               }}
-              className={cn(
-                "relative flex min-h-[54px] flex-1 flex-col items-center justify-center gap-1 rounded-[20px] px-1 py-1.5",
-                "transition-colors duration-300",
-                active ? "text-ivory" : "text-faint hover:text-muted",
-              )}
+              className="relative -mt-9 flex min-h-[52px] flex-col items-center justify-center gap-1 px-1"
             >
-              {active && (
-                <motion.span
-                  layoutId="nav-pool"
-                  transition={{ type: "spring", stiffness: 480, damping: 36 }}
-                  className="nav-pool absolute inset-0 rounded-[20px]"
-                  aria-hidden
-                />
-              )}
-              <Icon
-                size={19}
-                strokeWidth={active ? 2.1 : 1.6}
+              <motion.span
+                whileTap={{ scale: 0.92 }}
                 className={cn(
-                  "relative z-10 transition-all duration-300",
-                  active && "text-glow drop-shadow-[0_0_9px_rgba(56,189,248,0.45)]",
+                  "flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-tr from-blue-600 to-sky-400 text-white shadow-lg shadow-blue-500/30 ring-[5px] ring-[#060911] transition-shadow duration-300",
+                  active && "shadow-[0_0_28px_rgba(56,189,248,0.55)]",
                 )}
-              />
+              >
+                <Icon size={23} strokeWidth={2} />
+              </motion.span>
               <span
                 className={cn(
-                  "relative z-10 text-[8.5px] font-semibold uppercase tracking-[0.14em] transition-colors duration-300",
-                  active ? "text-ivory/95" : "text-faint/80",
+                  "text-[9px] font-semibold tracking-[0.04em]",
+                  active ? "text-white" : "text-slate-400",
                 )}
               >
                 {tab.label}
               </span>
-              {active && (
-                <motion.span
-                  layoutId="nav-dot"
-                  className="absolute bottom-[5px] z-10 h-[2px] w-4 rounded-full bg-glow/80 shadow-[0_0_8px_rgba(56,189,248,0.8)]"
-                />
-              )}
             </Link>
           );
-        })}
-      </div>
+        }
+
+        return (
+          <Link
+            key={tab.href}
+            href={tab.href}
+            aria-current={active ? "page" : undefined}
+            aria-label={tab.label}
+            onClick={() => {
+              if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+                navigator.vibrate?.(6);
+              }
+            }}
+            className={cn(
+              "relative flex min-h-[52px] min-w-[52px] flex-col items-center justify-center gap-1 rounded-full px-1.5 transition-colors duration-300",
+              active ? "text-white" : "text-slate-400",
+            )}
+          >
+            <Icon
+              size={20}
+              strokeWidth={active ? 2.2 : 1.7}
+              className={cn(
+                "transition-all duration-300",
+                active && "drop-shadow-[0_0_9px_rgba(56,189,248,0.55)]",
+              )}
+            />
+            <span className="text-[9px] font-semibold tracking-[0.04em]">
+              {tab.label}
+            </span>
+            {active && (
+              <motion.span
+                layoutId="nav-dot"
+                className="absolute bottom-1 h-1 w-1 rounded-full bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.9)]"
+                aria-hidden
+              />
+            )}
+          </Link>
+        );
+      })}
     </nav>
   );
 }

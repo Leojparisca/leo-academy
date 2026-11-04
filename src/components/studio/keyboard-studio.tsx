@@ -1,9 +1,11 @@
 "use client";
 
 import {
+  ChevronDown,
   Hand,
   Maximize2,
   Minus,
+  Piano,
   Plus,
   Sparkles,
   SlidersHorizontal,
@@ -33,14 +35,12 @@ import { cn } from "@/lib/utils";
 type ViewMode = "one" | "half" | "two";
 
 const VIEW_OPTIONS: Array<{
-  id: ViewMode | "full";
+  id: ViewMode;
   label: string;
-  hint: string;
 }> = [
-  { id: "one", label: "1 Octava", hint: "Grande" },
-  { id: "half", label: "1.5 Octavas", hint: "Medio" },
-  { id: "two", label: "2 Octavas", hint: "Amplio" },
-  { id: "full", label: "Pantalla", hint: "Completa" },
+  { id: "one", label: "1 oct" },
+  { id: "half", label: "1.5 oct" },
+  { id: "two", label: "2 oct" },
 ];
 
 function rangeLabel(octaves: 1 | 1.5 | 2) {
@@ -120,7 +120,7 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
   const level = getLevel(activeStudent?.currentLevel ?? 1);
   const audio = useAudioEngine();
 
-  const [preset, setPreset] = useState<EnginePreset>("rhodes");
+  const [preset, setPreset] = useState<EnginePreset>("grand");
   const [volume, setVolume] = useState(72);
   const [sustain, setSustain] = useState(false);
   const [octave, setOctave] = useState(4);
@@ -489,7 +489,8 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
   const octaves: 1 | 1.5 | 2 =
     view === "two" ? 2 : view === "half" ? 1.5 : 1;
   const startMidi = (octave + 1) * 12;
-  const namingMeta = NAMING_OPTIONS.find((option) => option.id === naming)!;
+  const presetLabel =
+    PRESETS.find((option) => option.id === preset)?.label ?? "Grand Piano";
 
   const midiLabel = !midi.supported
     ? "MIDI · sin soporte"
@@ -539,102 +540,147 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
         analyser={audio.analyser}
         ready={audio.ready}
         lastHarmony={lastHarmony}
+        fingering={fingering}
       />
 
-      <div className="grid gap-2">
-        <div className="neu-inset rounded-[18px] p-2.5">
-          <div className="flex items-center justify-between">
-            <p className="eyebrow text-[6.5px]">Vista del teclado</p>
-            <span className="text-[6px] font-semibold uppercase tracking-[0.12em] text-faint/70">
-              {rangeLabel(octaves)}
-            </span>
-          </div>
-          <div className="mt-2 grid grid-cols-3 gap-1">
-            {VIEW_OPTIONS.map((option) => {
-              const activeOption =
-                option.id === "full" ? fullscreen : !fullscreen && view === option.id;
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => {
-                    if (option.id === "full") void enterImmersive();
-                    else changeView(option.id);
-                  }}
-                  aria-pressed={activeOption}
-                  title={
-                    option.id === "full"
-                      ? "Pantalla Completa"
-                      : option.id === "one"
-                        ? "1 Octava Grande"
-                        : option.id === "half"
-                          ? "1.5 Octavas"
-                          : "2 Octavas"
-                  }
-                  className={cn(
-                    "flex min-h-[38px] flex-col items-center justify-center gap-0.5 rounded-[10px] border px-1 py-1 transition-all duration-300",
-                    activeOption
-                      ? "border-cyan-300/25 bg-white/[0.06] text-ivory shadow-[inset_0_0_0_1px_rgba(56,189,248,0.08)]"
-                      : "border-transparent text-faint hover:bg-white/[0.025] hover:text-muted",
-                  )}
-                >
-                  <span className="text-[8px] font-semibold tracking-[0.04em]">
-                    {option.label}
-                  </span>
-                  <span
-                    className={cn(
-                      "text-[5.5px] font-semibold uppercase tracking-[0.12em]",
-                      activeOption ? "text-glow/80" : "text-faint/60",
-                    )}
-                  >
-                    {option.hint}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+      <div className="rounded-2xl border border-white/[0.08] bg-[#0E1524]/80 p-1.5 backdrop-blur-xl">
+        <div className="scrollbar-none flex items-center gap-1.5 overflow-x-auto">
+          <label className="relative flex h-10 flex-none items-center gap-1.5 rounded-full bg-white/[0.06] pl-3 pr-2">
+            <Piano size={14} className="text-sky-400" />
+            <select
+              value={preset}
+              onChange={(event) => setPreset(event.target.value as EnginePreset)}
+              aria-label="Sonido del piano"
+              className="appearance-none bg-transparent pr-4 text-[11px] font-semibold text-white outline-none"
+            >
+              <option value="grand" className="bg-[#0E1524]">
+                Grand Piano
+              </option>
+              <option value="rhodes" className="bg-[#0E1524]">
+                Rhodes
+              </option>
+              <option value="glass" className="bg-[#0E1524]">
+                Cristal
+              </option>
+            </select>
+            <ChevronDown
+              size={12}
+              className="pointer-events-none absolute right-2 text-slate-400"
+            />
+          </label>
 
-        <div className="neu-inset rounded-[18px] p-2.5">
-          <div className="flex items-center justify-between">
-            <p className="eyebrow text-[6.5px]">Nomenclatura</p>
-            <span className="text-[6px] font-semibold uppercase tracking-[0.12em] text-faint/70">
-              {namingMeta.full}
+          <div className="flex h-10 flex-none items-center rounded-full bg-white/[0.06]">
+            <button
+              type="button"
+              onClick={() => changeOctave(-1)}
+              disabled={octave <= 2}
+              aria-label="Bajar una octava"
+              className="grid h-8 w-8 place-items-center rounded-full text-slate-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-30"
+            >
+              <Minus size={13} />
+            </button>
+            <span className="min-w-[38px] text-center text-[10px] font-bold tracking-[0.02em] text-white">
+              OCT {octave}
             </span>
+            <button
+              type="button"
+              onClick={() => changeOctave(1)}
+              disabled={octave >= 6}
+              aria-label="Subir una octava"
+              className="grid h-8 w-8 place-items-center rounded-full text-slate-300 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-30"
+            >
+              <Plus size={13} />
+            </button>
           </div>
-          <div className="mt-2 grid grid-cols-4 gap-1">
-            {NAMING_OPTIONS.map((option) => {
-              const activeOption = naming === option.id;
-              return (
-                <button
+
+          <button
+            type="button"
+            onClick={() => setFingering((value) => !value)}
+            aria-pressed={fingering}
+            aria-label="Modo Molde / Digitación"
+            title="Modo Molde / Digitación · 1-3-5"
+            className={cn(
+              "flex h-10 flex-none items-center gap-1.5 rounded-full px-3 text-[10px] font-bold transition-colors",
+              fingering
+                ? "bg-sky-400/20 text-sky-200 ring-1 ring-sky-400/40"
+                : "bg-white/[0.06] text-slate-300",
+            )}
+          >
+            <Hand size={13} />
+            1·3·5
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void enterImmersive()}
+            aria-label="Pantalla completa"
+            title="Pantalla completa"
+            className="grid h-10 w-10 flex-none place-items-center rounded-full bg-gradient-to-tr from-blue-600 to-sky-400 text-white shadow-lg shadow-blue-500/30 transition-transform active:scale-95"
+          >
+            <Maximize2 size={15} />
+          </button>
+
+          <label className="relative flex h-10 flex-none items-center rounded-full bg-white/[0.06] pl-3 pr-2">
+            <select
+              value={naming}
+              onChange={(event) => setNaming(event.target.value as NamingMode)}
+              aria-label="Nomenclatura de las notas"
+              className="max-w-[74px] appearance-none truncate bg-transparent pr-4 text-[10px] font-semibold text-white outline-none"
+            >
+              {NAMING_OPTIONS.map((option) => (
+                <option
                   key={option.id}
-                  type="button"
-                  onClick={() => setNaming(option.id)}
-                  aria-pressed={activeOption}
-                  title={option.full}
-                  className={cn(
-                    "flex min-h-[34px] flex-col items-center justify-center gap-0.5 rounded-[9px] border px-0.5 py-1 transition-all duration-300",
-                    activeOption
-                      ? "border-cyan-300/25 bg-white/[0.06] text-ivory"
-                      : "border-transparent text-faint hover:bg-white/[0.025] hover:text-muted",
-                  )}
+                  value={option.id}
+                  className="bg-[#0E1524]"
                 >
-                  <span className="text-[7.5px] font-semibold">
-                    {option.label}
-                  </span>
-                  <span
-                    className={cn(
-                      "text-[5px] font-semibold uppercase tracking-[0.1em]",
-                      activeOption ? "text-glow/75" : "text-faint/55",
-                    )}
-                  >
-                    {option.hint}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown
+              size={12}
+              className="pointer-events-none absolute right-2 text-slate-400"
+            />
+          </label>
+
+          <label className="relative flex h-10 flex-none items-center rounded-full bg-white/[0.06] pl-3 pr-2">
+            <select
+              value={view}
+              onChange={(event) => changeView(event.target.value as ViewMode)}
+              aria-label="Vista del teclado"
+              className="max-w-[62px] appearance-none bg-transparent pr-4 text-[10px] font-semibold text-white outline-none"
+            >
+              {VIEW_OPTIONS.map((option) => (
+                <option
+                  key={option.id}
+                  value={option.id}
+                  className="bg-[#0E1524]"
+                >
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown
+              size={12}
+              className="pointer-events-none absolute right-2 text-slate-400"
+            />
+          </label>
         </div>
+      </div>
+
+      <div className="flex items-center gap-2.5 px-1">
+        <span className="flex-none text-[10px] font-semibold text-slate-400">
+          Próximo minuto
+        </span>
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.08]">
+          <div
+            className="h-full rounded-full bg-[linear-gradient(90deg,#0D6EFD,#38BDF8)] shadow-[0_0_10px_rgba(56,189,248,0.6)] transition-[width] duration-500"
+            style={{ width: `${((seconds % 60) / 60) * 100}%` }}
+          />
+        </div>
+        <span className="w-9 flex-none text-right text-[10px] font-bold tabular-nums text-sky-300">
+          {60 - (seconds % 60)}s
+        </span>
       </div>
 
       <div className="keyboard-stage neu-card relative rounded-[26px] p-3">
@@ -681,15 +727,6 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
                 {midi.status === "ready" ? midiLabel : "MIDI"}
               </span>
             </button>
-            <button
-              type="button"
-              onClick={() => void enterImmersive()}
-              aria-label="Pantalla Completa"
-              title="Pantalla Completa"
-              className="neu-icon h-7 w-7 rounded-[9px]"
-            >
-              <Maximize2 size={11} />
-            </button>
           </div>
         </div>
 
@@ -707,77 +744,24 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
           />
         </div>
 
-        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-          <div className="neu-pill h-9 gap-0 p-1">
-            <button
-              type="button"
-              onClick={() => changeOctave(-1)}
-              disabled={octave <= 2}
-              aria-label="Bajar una octava"
-              className="grid h-7 w-7 place-items-center rounded-[9px] text-muted transition-colors hover:bg-white/5 hover:text-ivory disabled:opacity-30"
-            >
-              <Minus size={12} />
-            </button>
-            <span className="min-w-[34px] text-center font-display text-[10px] text-ivory">
-              OCT {octave}
-            </span>
-            <button
-              type="button"
-              onClick={() => changeOctave(1)}
-              disabled={octave >= 6}
-              aria-label="Subir una octava"
-              className="grid h-7 w-7 place-items-center rounded-[9px] text-muted transition-colors hover:bg-white/5 hover:text-ivory disabled:opacity-30"
-            >
-              <Plus size={12} />
-            </button>
-          </div>
-
+        <div className="mt-2.5 flex items-center justify-between gap-2 px-1">
           <button
             type="button"
             onClick={() => setSustain((value) => !value)}
             aria-pressed={sustain}
             className={cn(
-              "neu-button h-9 min-h-0 rounded-[12px] px-2.5 text-[8px]",
-              sustain && "border-cyan-300/30 text-glow",
+              "flex h-9 items-center gap-1.5 rounded-full px-3 text-[10px] font-semibold transition-colors",
+              sustain
+                ? "bg-sky-400/20 text-sky-200 ring-1 ring-sky-400/40"
+                : "bg-white/[0.06] text-slate-300",
             )}
           >
-            <Waves size={12} />
+            <Waves size={13} />
             Pedal
           </button>
-
-          <button
-            type="button"
-            onClick={() => setFingering((value) => !value)}
-            aria-pressed={fingering}
-            aria-label="Modo Molde / Digitación"
-            title="Modo Molde / Digitación · 1-3-5"
-            className={cn(
-              "neu-button h-9 min-h-0 rounded-[12px] px-2.5 text-[8px]",
-              fingering && "border-cyan-300/30 text-glow",
-            )}
-          >
-            <Hand size={12} />
-            Molde
-          </button>
-
-          <div className="ml-auto flex items-center gap-0.5 rounded-[11px] border border-white/[0.05] bg-black/20 p-0.5">
-            {PRESETS.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => setPreset(option.id)}
-                aria-pressed={preset === option.id}
-                className={cn(
-                  "rounded-[8px] px-1.5 py-1.5 text-[6.5px] font-semibold uppercase tracking-[0.08em] transition-all duration-300",
-                  preset === option.id
-                    ? "bg-white/[0.08] text-ivory shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
-                    : "text-faint hover:text-muted",
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+            {presetLabel}
+          </span>
         </div>
 
         <div className="mt-2 flex items-center gap-2.5 px-1">

@@ -88,7 +88,7 @@ Copy `.env.example` to `.env.local` (gitignored):
 | ----------------------- | --------------------------------------------------- |
 | `DATABASE_URL`          | `file:local.db` or `libsql://…` (Turso). Optional.  |
 | `DATABASE_AUTH_TOKEN`   | Turso token; only needed for a remote database.     |
-| `PROFESSOR_PIN`         | Exactly 4 digits. Default `1006`.                   |
+| `PROFESSOR_PIN`         | Exactly 4 digits. Server-only; no UI hint.          |
 | `TEACHER_SESSION_SECRET`| Long random string used to sign the session cookie. |
 | `STUDENT_SESSION_SECRET`| Optional secret for student cookies.                |
 | `LEO_MIGRATIONS_DIR`    | Optional override for the `drizzle/` folder.        |
@@ -371,7 +371,7 @@ overrides.
 
 ## Phase 4 — Teacher desk, teleprompter & attendance
 
-- [x] PIN default is now `1006` (server env `TEACHER_PIN` always wins).
+- [x] PIN is validated from the server environment only (`TEACHER_PIN` wins).
 - [x] `src/data/teacher-guide.ts`: 15 teleprompter entries keyed by curriculum
       node id. Each one carries:
       - a 60-second hook (everyday/psychological analogy + landing line),
@@ -487,8 +487,8 @@ overrides.
 - **Visor gradients:** SVG gradients painted on zero-height horizontal lines
   must use `gradientUnits="userSpaceOnUse"`; the default object bounding box is
   degenerate and hides the staff.
-- **Dev PIN:** `1006` by default outside production (or `TEACHER_PIN` in
-  `.env.local`). Change it before deploying.
+- **Dev PIN:** read from `TEACHER_PIN` / `PROFESSOR_PIN` in `.env.local` (or
+  the server environment). Set a private value before deploying.
 - **Phone-number dates:** `formatShortDate` appends `T12:00:00` to plain
   `YYYY-MM-DD` values. Parsing them as UTC midnight showed the previous day in
   western timezones (attendance listed the 29th as the 28th).

@@ -68,7 +68,8 @@ With no environment variables the app creates, migrates and seeds a local LibSQL
 database at `./.data/leo-academy.db` on first use. Set `DATABASE_URL=libsql://…`
 plus `DATABASE_AUTH_TOKEN` to point the same code at a free Turso database.
 Only the curriculum reference rows are seeded — every student, grade and
-practice session comes from real use. The teacher PIN defaults to `1006`.
+practice session comes from real use. The teacher PIN is read from the server
+environment (`TEACHER_PIN` / `PROFESSOR_PIN`) and never published in the UI.
 
 ### Scripts
 

@@ -192,7 +192,7 @@ export function PianoKeyboard({
   return (
     <div
       className={cn(
-        "piano-keybed relative flex w-full select-none gap-[2px] rounded-[12px] bg-[#02060c] p-[3px] shadow-[inset_0_2px_10px_rgba(0,0,0,0.9)]",
+        "piano-keybed relative flex w-full select-none gap-px rounded-[12px] bg-[#02060c] p-[3px] shadow-[inset_0_2px_10px_rgba(0,0,0,0.9)]",
         immersive ? "h-full w-full" : "h-[176px] sm:h-[204px]",
       )}
       role="group"
@@ -217,8 +217,8 @@ export function PianoKeyboard({
               className={cn(
                 "pointer-events-none absolute top-0 z-[1] h-[62%] rounded-b-[8px] border-x border-b shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]",
                 pair
-                  ? "border-cyan-300/15 bg-[linear-gradient(180deg,rgba(56,189,248,0.22),rgba(56,189,248,0.05)_58%,transparent)]"
-                  : "border-[#9DB5FF]/15 bg-[linear-gradient(180deg,rgba(157,181,255,0.22),rgba(90,120,230,0.05)_58%,transparent)]",
+                  ? "border-cyan-300/25 bg-[linear-gradient(180deg,rgba(56,189,248,0.38),rgba(56,189,248,0.1)_58%,transparent)]"
+                  : "border-[#9DB5FF]/25 bg-[linear-gradient(180deg,rgba(157,181,255,0.38),rgba(90,120,230,0.1)_58%,transparent)]",
               )}
               style={{ left: `${left}%`, width: `${width}%` }}
             />
@@ -246,7 +246,7 @@ export function PianoKeyboard({
               <span
                 aria-hidden
                 className={cn(
-                  "pointer-events-none absolute left-1/2 top-[35%] z-[2] grid -translate-x-1/2 place-items-center rounded-full border border-cyan-300/40 bg-[#0a2238]/95 font-bold tabular-nums text-cyan-100",
+                  "pointer-events-none absolute left-1/2 top-[64%] z-[2] grid -translate-x-1/2 place-items-center rounded-full border border-cyan-300/40 bg-[#0a2238]/95 font-bold tabular-nums text-cyan-100",
                   "shadow-[inset_0_1px_0_rgba(255,255,255,0.2),0_2px_5px_rgba(2,6,12,0.55),0_0_12px_rgba(56,189,248,0.18)]",
                   immersive
                     ? "h-4 w-4 text-[8px]"

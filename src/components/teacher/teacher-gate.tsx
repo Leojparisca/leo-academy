@@ -92,40 +92,39 @@ export function TeacherGate({ configured }: { configured: boolean }) {
 
   return (
     <div className="space-y-6">
-      <header className="text-center">
-        <div className="relative mx-auto mb-5 grid h-[76px] w-[76px] place-items-center">
-          <span className="absolute inset-0 rounded-full border border-cyan-300/10 shadow-[0_0_36px_rgba(13,110,253,0.12)]" />
-          <span className="absolute inset-2 rounded-full border border-white/[0.05]" />
-          <span className="neu-icon h-[58px] w-[58px] rounded-full text-glow">
-            <LockKeyhole size={21} strokeWidth={1.4} />
-          </span>
+      <header className="pt-4 text-center">
+        <div className="relative mx-auto mb-5 grid h-[84px] w-[84px] place-items-center rounded-full border border-white/10 bg-[#0E1524]/80 shadow-[0_0_70px_rgba(13,110,253,0.4)] backdrop-blur-xl">
+          <span
+            aria-hidden
+            className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_30%_20%,rgba(56,189,248,0.22),transparent_65%)]"
+          />
+          <LockKeyhole size={28} strokeWidth={1.5} className="relative text-sky-300" />
         </div>
-        <div className="flex items-center justify-center gap-2">
-          <span className="status-dot text-ember" />
-          <p className="eyebrow">Acceso privado</p>
-        </div>
-        <h1 className="mt-3 font-display text-[36px] leading-[0.95] tracking-[-0.03em] text-ivory">
-          La mesa del
-          <br />
-          <em className="sapphire-text font-normal italic">profesor</em>
-          <span className="text-glow">.</span>
+        <p className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.05] px-4 py-1.5 text-[11px] font-medium text-slate-300 backdrop-blur-xl">
+          <span className="h-1.5 w-1.5 rounded-full bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.9)]" />
+          Acceso privado
+        </p>
+        <h1 className="mt-4 text-[32px] font-bold leading-[1.05] tracking-[-0.03em] text-white">
+          La mesa del{" "}
+          <span className="text-sky-300">profesor</span>.
         </h1>
-        <p className="mx-auto mt-3 max-w-[260px] text-[10.5px] leading-relaxed text-muted">
-          Evaluaciones, niveles y el pulso de cada alumno. Solo tú puedes abrir
-          esta puerta.
+        <p className="mt-2 text-[12px] text-slate-400">
+          Solo tú puedes abrir esta puerta.
         </p>
       </header>
 
-      <div className="neu-card relative overflow-hidden rounded-[26px] p-5">
-        <div
+      <div className="relative overflow-hidden rounded-3xl border border-white/[0.08] bg-[#0E1524]/80 p-5 backdrop-blur-xl">
+        <span
           aria-hidden
-          className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-royal/10 blur-3xl"
+          className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full bg-royal/20 blur-3xl"
         />
         <div className="relative">
           <div className="flex items-center justify-between">
-            <span className="eyebrow text-[7px]">PIN del profesor</span>
-            <span className="flex items-center gap-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-faint">
-              <KeyRound size={9} />
+            <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+              PIN del profesor
+            </span>
+            <span className="flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[10px] font-semibold text-slate-300">
+              <KeyRound size={10} />
               4 dígitos
             </span>
           </div>
@@ -137,45 +136,52 @@ export function TeacherGate({ configured }: { configured: boolean }) {
                 : { x: 0 }
             }
             transition={{ duration: 0.42 }}
-            className="mt-3"
+            className="mt-4 grid grid-cols-4 gap-2"
           >
-            <div className="neu-inset--deep flex h-[66px] items-center justify-center gap-3.5 rounded-[18px]">
-              {[0, 1, 2, 3].map((index) => {
-                const filled = index < digits.length;
-                return (
+            {[0, 1, 2, 3].map((index) => {
+              const filled = index < digits.length;
+              return (
+                <span
+                  key={index}
+                  className={cn(
+                    "grid h-[58px] place-items-center rounded-2xl border transition-all duration-200",
+                    filled
+                      ? status === "error"
+                        ? "border-red-400/40 bg-red-400/10 shadow-[0_0_15px_rgba(248,113,113,0.25)]"
+                        : "border-sky-400/50 bg-sky-400/[0.08] shadow-[0_0_15px_rgba(56,189,248,0.3)]"
+                      : "border-white/10 bg-white/[0.04]",
+                    status === "checking" && filled && "animate-dot-pulse",
+                  )}
+                >
                   <span
-                    key={index}
                     className={cn(
-                      "h-3 w-3 rounded-full border transition-all duration-200",
+                      "h-3 w-3 rounded-full transition-all duration-200",
                       filled
                         ? status === "error"
-                          ? "border-red-400/40 bg-red-400 shadow-[0_0_12px_rgba(248,113,113,0.5)]"
-                          : "border-cyan-200/40 bg-glow shadow-[0_0_14px_rgba(56,189,248,0.65)]"
-                        : "border-white/10 bg-white/[0.03]",
-                      status === "checking" &&
-                        filled &&
-                        "animate-dot-pulse",
+                          ? "bg-red-400 shadow-[0_0_12px_rgba(248,113,113,0.6)]"
+                          : "bg-sky-400 shadow-[0_0_14px_rgba(56,189,248,0.8)]"
+                        : "bg-white/10",
                     )}
                   />
-                );
-              })}
-            </div>
+                </span>
+              );
+            })}
           </motion.div>
 
           <div className="mt-3 min-h-[18px] text-center" aria-live="polite">
             {message ? (
-              <p className="text-[9.5px] font-medium text-red-300/90">{message}</p>
+              <p className="text-[11px] font-medium text-red-300/90">{message}</p>
             ) : status === "checking" ? (
-              <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-glow/80">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-300">
                 Verificando…
               </p>
             ) : status === "success" ? (
-              <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-emerald-300/90">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-300/90">
                 Bienvenido, profe.
               </p>
             ) : (
-              <p className="text-[8.5px] text-faint/70">
-                Toca los dígitos. Se abre al cuarto.
+              <p className="text-[11px] text-slate-400">
+                Se abre al cuarto dígito.
               </p>
             )}
           </div>
@@ -203,12 +209,12 @@ export function TeacherGate({ configured }: { configured: boolean }) {
                   disabled={!configured || status === "checking"}
                   aria-label={isDelete ? "Borrar último dígito" : `Dígito ${key}`}
                   className={cn(
-                    "neu-button h-[58px] rounded-[16px] p-0 font-display text-[22px] font-normal",
-                    isDelete && "text-muted",
+                    "h-[58px] rounded-2xl border border-white/[0.08] bg-white/[0.05] p-0 text-[22px] font-bold text-white transition-colors hover:bg-white/[0.08] active:bg-white/[0.11]",
+                    isDelete && "text-slate-300",
                     !configured && "opacity-40",
                   )}
                 >
-                  {isDelete ? <Delete size={18} strokeWidth={1.7} /> : key}
+                  {isDelete ? <Delete size={19} strokeWidth={1.8} /> : key}
                 </motion.button>
               );
             })}
@@ -229,7 +235,7 @@ export function TeacherGate({ configured }: { configured: boolean }) {
           type="button"
           onClick={() => setShowHint((value) => !value)}
           aria-expanded={showHint}
-          className="text-[8px] font-semibold uppercase tracking-[0.12em] text-faint transition-colors hover:text-ivory"
+          className="rounded-full px-3 py-2 text-[11px] font-medium text-slate-400 transition-colors hover:text-white"
         >
           ¿Olvidaste tu PIN de Profesor?
         </button>
@@ -242,29 +248,20 @@ export function TeacherGate({ configured }: { configured: boolean }) {
               exit={{ opacity: 0, height: 0 }}
               className="overflow-hidden"
             >
-              <p className="mx-auto mt-2 max-w-[280px] rounded-[12px] border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-[8.5px] leading-relaxed text-faint">
-                Pista discreta:{" "}
-                <span className="font-semibold text-glow/85">
-                  día y mes de cumpleaños
-                </span>
-                . El PIN inicial de la academia es{" "}
-                <span className="font-semibold tracking-[0.16em] text-ivory">
-                  1006
-                </span>
-                .
+              <p className="mx-auto mt-2 max-w-[300px] rounded-2xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3 text-[11px] leading-relaxed text-slate-300">
+                Si olvidaste tu PIN de acceso, cámbialo en las variables de
+                entorno de tu servidor o contacta al administrador
               </p>
             </motion.div>
           )}
         </AnimatePresence>
       </div>
 
-      <div className="flex items-start gap-2.5 px-2">
-        <ShieldCheck size={13} className="mt-0.5 flex-none text-glow/60" />
-        <p className="text-[8.5px] leading-[1.6] text-faint">
-          El PIN se verifica en el servidor. Nunca viaja al cliente, no se
-          guarda en IndexedDB y la sesión vive en una cookie{" "}
-          <span className="text-muted">httpOnly</span> firmada.
-        </p>
+      <div className="flex justify-center">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.03] px-3 py-1.5 text-[10px] text-slate-400">
+          <ShieldCheck size={11} className="text-sky-400/70" />
+          Verificado en el servidor · Cookie privada
+        </span>
       </div>
     </div>
   );

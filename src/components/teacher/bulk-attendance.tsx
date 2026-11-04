@@ -150,25 +150,25 @@ export function BulkAttendance({
 
   return (
     <>
-      <div className="neu-card mt-3 flex items-center gap-3 rounded-[18px] p-3.5">
-        <span className="grid h-9 w-9 flex-none place-items-center rounded-[11px] border border-cyan-300/20 bg-cyan-300/[0.06] text-glow">
-          <Users size={16} />
+      <div className="mt-3 flex items-center gap-3 rounded-3xl border border-white/[0.08] bg-[#0E1524]/80 p-3.5 backdrop-blur-xl">
+        <span className="grid h-11 w-11 flex-none place-items-center rounded-full border border-sky-400/25 bg-sky-400/10 text-sky-300">
+          <Users size={19} />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-[9.5px] font-semibold text-ivory/90">
+          <p className="text-[14px] font-bold leading-tight text-white">
             Pasar Lista Grupal
           </p>
-          <p className="mt-0.5 text-[7px] leading-snug text-faint">
-            Toda la clase en un toque · presentes por defecto
+          <p className="mt-0.5 text-[11px] text-slate-300">
+            Toda la clase en un toque
           </p>
         </div>
         <button
           type="button"
           onClick={openModal}
           disabled={disabled || students.length === 0}
-          className="neu-button h-9 min-h-0 flex-none rounded-[11px] px-3 text-[8.5px] disabled:opacity-50"
+          className="flex h-11 min-h-0 flex-none items-center gap-1.5 rounded-full bg-gradient-to-r from-blue-600 to-sky-500 px-4 text-[11px] font-bold text-white shadow-lg shadow-blue-500/25 transition-transform active:scale-95 disabled:opacity-50"
         >
-          <CalendarCheck size={12} />
+          <CalendarCheck size={14} />
           Pasar lista
         </button>
       </div>
@@ -195,33 +195,34 @@ export function BulkAttendance({
                   role="dialog"
                   aria-modal="true"
                   aria-labelledby="bulk-attendance-title"
-                  className="neu-card flex max-h-[92dvh] w-full max-w-[460px] flex-col overflow-hidden rounded-t-[26px] sm:rounded-[26px]"
+                  className="flex max-h-[92dvh] w-full max-w-[460px] flex-col overflow-hidden rounded-t-3xl border border-white/10 bg-[#0B111D]/95 shadow-2xl shadow-black/80 backdrop-blur-2xl sm:rounded-3xl"
                 >
-                  <header className="flex items-start justify-between gap-3 border-b border-white/[0.055] px-4 py-3.5">
+                  <header className="flex items-start justify-between gap-3 border-b border-white/[0.07] px-5 py-4">
                     <div>
-                      <p className="eyebrow text-[6.5px]">Asistencia del salón</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+                        Asistencia del salón
+                      </p>
                       <h2
                         id="bulk-attendance-title"
-                        className="mt-1 font-display text-[21px] leading-none text-ivory"
+                        className="mt-1.5 text-2xl font-bold leading-tight text-white"
                       >
                         Pasar Lista Grupal
                       </h2>
-                      <p className="mt-1.5 text-[7.5px] text-faint">
-                        {students.length} alumnos · guarda Dexie y SQLite a la
-                        vez
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        {students.length} alumnos · guarda local y nube a la vez
                       </p>
                     </div>
                     <button
                       type="button"
                       onClick={() => setOpen(false)}
                       aria-label="Cerrar pasar lista"
-                      className="grid h-8 w-8 flex-none place-items-center rounded-[10px] text-faint transition-colors hover:bg-white/5 hover:text-ivory"
+                      className="grid h-10 w-10 flex-none place-items-center rounded-full border border-white/[0.08] bg-white/[0.04] text-slate-300 transition-colors hover:text-white"
                     >
-                      <X size={15} />
+                      <X size={17} />
                     </button>
                   </header>
 
-                  <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3.5">
+                  <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
                     <div className="grid grid-cols-2 gap-2">
                       <label className="block">
                         <span className="mb-1.5 block text-[7px] font-semibold uppercase tracking-[0.15em] text-faint">
@@ -308,7 +309,7 @@ export function BulkAttendance({
 
                     <div>
                       <div className="mb-2 flex items-center justify-between gap-2">
-                        <span className="text-[7px] font-semibold uppercase tracking-[0.15em] text-faint">
+                        <span className="text-[11px] font-semibold text-slate-300">
                           Presentes ({selectedIds.length}/{students.length})
                         </span>
                         <div className="flex items-center gap-1">
@@ -319,15 +320,15 @@ export function BulkAttendance({
                                 new Set(students.map((student) => student.id)),
                               )
                             }
-                            className="rounded-full px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.08em] text-glow/85 hover:text-glow"
+                            className="rounded-full px-2 py-1 text-[10px] font-semibold text-sky-300 hover:text-sky-200"
                           >
                             Marcar todos
                           </button>
-                          <span className="text-faint/30">·</span>
+                          <span className="text-white/20">·</span>
                           <button
                             type="button"
                             onClick={() => setSelected(new Set())}
-                            className="rounded-full px-2 py-1 text-[7px] font-semibold uppercase tracking-[0.08em] text-faint hover:text-muted"
+                            className="rounded-full px-2 py-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200"
                           >
                             Desmarcar
                           </button>
@@ -341,10 +342,10 @@ export function BulkAttendance({
                             <label
                               key={student.id}
                               className={cn(
-                                "flex cursor-pointer items-center gap-2.5 rounded-[12px] border px-2.5 py-2 transition-colors",
+                                "flex min-h-[54px] cursor-pointer items-center gap-3 rounded-2xl border px-3 py-2 transition-colors",
                                 checked
-                                  ? "border-cyan-300/25 bg-cyan-300/[0.045]"
-                                  : "border-white/[0.055] bg-white/[0.012]",
+                                  ? "border-sky-400/30 bg-sky-400/[0.08]"
+                                  : "border-white/[0.07] bg-white/[0.02]",
                               )}
                             >
                               <input
@@ -357,19 +358,19 @@ export function BulkAttendance({
                               <span
                                 aria-hidden
                                 className={cn(
-                                  "grid h-5 w-5 flex-none place-items-center rounded-[6px] border transition-all",
+                                  "grid h-6 w-6 flex-none place-items-center rounded-full border transition-all",
                                   checked
-                                    ? "border-cyan-300/45 bg-cyan-300/15 text-glow shadow-[inset_0_1px_0_rgba(255,255,255,0.15),0_0_12px_rgba(56,189,248,0.15)]"
-                                    : "border-white/12 bg-black/30 text-transparent",
+                                    ? "border-sky-400/60 bg-sky-400/25 text-white shadow-[0_0_12px_rgba(56,189,248,0.35)]"
+                                    : "border-white/20 bg-black/30 text-transparent",
                                 )}
                               >
-                                <Check size={12} strokeWidth={3} />
+                                <Check size={13} strokeWidth={3} />
                               </span>
                               <span className="min-w-0 flex-1">
-                                <span className="block truncate text-[9.5px] font-semibold text-ivory/90">
+                                <span className="block truncate text-[13px] font-semibold text-white">
                                   {student.name}
                                 </span>
-                                <span className="block text-[6.5px] uppercase tracking-[0.1em] text-faint">
+                                <span className="block text-[10px] uppercase tracking-[0.1em] text-slate-400">
                                   Nivel {student.currentLevel}
                                 </span>
                               </span>
@@ -398,14 +399,14 @@ export function BulkAttendance({
                     )}
                   </div>
 
-                  <footer className="border-t border-white/[0.055] px-4 py-3">
+                  <footer className="border-t border-white/[0.07] px-5 py-4">
                     <button
                       type="button"
                       onClick={() => void save()}
                       disabled={saving || selectedIds.length === 0}
-                      className="neu-button neu-button--primary w-full rounded-[13px] py-2.5 text-[10px] disabled:opacity-50"
+                      className="neu-button neu-button--primary w-full text-[14px] disabled:opacity-50"
                     >
-                      <CalendarCheck size={13} />
+                      <CalendarCheck size={17} />
                       {saving
                         ? "Guardando asistencia…"
                         : "Guardar Asistencia de Clase"}

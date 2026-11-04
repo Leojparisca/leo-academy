@@ -458,6 +458,7 @@ export function StaffVisor({
   analyser,
   ready,
   lastHarmony,
+  fingering = false,
 }: {
   activeMidis: number[];
   ghostMidis?: number[];
@@ -465,6 +466,7 @@ export function StaffVisor({
   analyser: AnalyserNode | null;
   ready: boolean;
   lastHarmony: HarmonyAnalysis | null;
+  fingering?: boolean;
 }) {
   const harmony = useMemo(() => analyzeHarmony(activeMidis), [activeMidis]);
   const silent = harmony.kind === "silence";
@@ -482,12 +484,21 @@ export function StaffVisor({
         ? [`${shown.intervals[0]} st`]
         : [];
 
+  const headline = (() => {
+    if (!shown) return "Silencio";
+    if (shown.kind === "chord" && shown.rootPc !== null && naming === "solfege") {
+      return `${SOLFEGE[shown.rootPc]} ${shown.quality}`;
+    }
+    return shown.label;
+  })();
+
   const detail = (() => {
     if (!shown) return "El visor espera tu mano";
     if (silent) return "Último acorde escuchado";
     if (shown.kind === "chord" && shown.rootPc !== null) {
       const inversion =
         shown.inversion > 0 ? ` · ${INVERSION_LABEL[shown.inversion]}` : "";
+      if (naming === "solfege") return `${shown.label}${inversion}`;
       return `${SOLFEGE[shown.rootPc]} ${shown.quality}${inversion}`;
     }
     if (shown.kind === "interval") {
@@ -510,105 +521,117 @@ export function StaffVisor({
 
   return (
     <section
-      className="staff-visor neu-inset relative overflow-hidden rounded-[26px] px-3 pb-3 pt-3"
+      className="staff-visor relative overflow-hidden rounded-[28px] px-4 pb-4 pt-4"
       aria-label="Visor armónico en tiempo real"
     >
-      <header className="flex items-center justify-between gap-2 px-0.5">
-        <div className="flex items-center gap-1.5">
-          <span className="status-dot text-glow" />
-          <p className="eyebrow text-[6.8px]">Visor armónico</p>
+      <header className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.9)]" />
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+            Visor armónico
+          </p>
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[6px] font-semibold uppercase tracking-[0.14em] text-faint">
-            Clave de Sol · Fa
-          </span>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400">
+          {ready ? "Audio listo" : "Toca para sonar"}
           <span
             className={cn(
-              "h-1 w-1 rounded-full",
-              ready
-                ? "bg-cyan-300 shadow-[0_0_6px_#38BDF8]"
-                : "bg-white/20",
+              "h-1.5 w-1.5 rounded-full",
+              ready ? "bg-sky-400 shadow-[0_0_6px_#38BDF8]" : "bg-white/25",
             )}
           />
-        </div>
+        </span>
       </header>
 
-      <div className="staff-glass mt-2 overflow-hidden rounded-[16px] border border-white/[0.04]">
-        <StaffSvg activeMidis={activeMidis} ghostMidis={ghostMidis} />
-      </div>
-
-      <div className="mt-2.5 grid grid-cols-[minmax(0,1fr)_74px] items-end gap-2.5">
-        <div className="min-w-0">
-          <div className="flex min-h-[11px] items-center gap-1.5">
-            <p className="eyebrow text-[6px]">Armonía detectada</p>
-            {silent && shown && (
-              <span className="rounded-full border border-white/[0.07] px-1.5 py-[1px] text-[5.5px] font-semibold uppercase tracking-[0.12em] text-faint">
-                último
-              </span>
-            )}
+      <div className="mt-3 flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex min-h-[18px] flex-wrap items-center gap-1.5">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+              {silent && shown ? "Último acorde" : "Acorde detectado"}
+            </p>
             {rootLabel && (
-              <span className="rounded-full border border-cyan-300/20 bg-cyan-300/[0.06] px-1.5 py-[1px] text-[5.5px] font-semibold uppercase tracking-[0.12em] text-glow/80">
+              <span className="rounded-full border border-sky-400/25 bg-sky-400/[0.08] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-sky-300">
                 {rootLabel}
-              </span>
-            )}
-            {!ready && (
-              <span className="text-[5.5px] font-semibold uppercase tracking-[0.12em] text-faint/70">
-                toca para sonar
               </span>
             )}
           </div>
           <p
             className={cn(
-              "mt-1 truncate font-display text-[24px] leading-none transition-opacity duration-300",
-              silent && shown ? "text-ivory/55" : "text-ivory",
+              "mt-1.5 truncate text-3xl font-bold leading-none tracking-[-0.02em] transition-opacity duration-300",
+              silent && shown ? "text-slate-400" : "text-white",
             )}
           >
-            {shown?.label ?? "Silencio"}
+            {headline}
           </p>
-          <p className="mt-1 truncate text-[8.5px] leading-tight text-muted">
+          <p className="mt-2 truncate text-[12px] leading-tight text-slate-300">
             {detail}
           </p>
-          <div className="mt-1.5 flex min-h-[16px] flex-wrap gap-1">
-            {noteChips.length > 0 ? (
-              noteChips.map((note, index) => (
-                <span
-                  key={`${note}-${index}`}
-                  className={cn(
-                    "rounded-[6px] border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 text-[7px] font-semibold tracking-[0.04em]",
-                    silent ? "text-ivory/45" : "text-ivory/80",
-                  )}
-                >
-                  {note}
-                </span>
-              ))
-            ) : (
-              <span className="text-[7.5px] text-faint/70">
-                Toca un acorde de 3 o 4 notas
-              </span>
-            )}
-          </div>
-          {intervalChips.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {intervalChips.map((chip, index) => (
-                <span
-                  key={`${chip}-${index}`}
-                  className="rounded-[5px] bg-royal/15 px-1.5 py-[1px] text-[6px] font-bold uppercase tracking-[0.08em] text-glow/85"
-                >
-                  {chip}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
 
-        <div className="min-w-0">
-          <p className="text-right text-[5.5px] font-semibold uppercase tracking-[0.14em] text-faint">
+        <div className="w-[70px] flex-none">
+          <p className="text-right text-[8px] font-semibold uppercase tracking-[0.12em] text-slate-500">
             Espectro
           </p>
           <div className="mt-1 h-[46px] w-full">
             <Spectrum analyser={analyser} live={live} />
           </div>
         </div>
+      </div>
+
+      <div className="mt-3 flex min-h-[32px] flex-wrap items-center gap-1.5">
+        {noteChips.length > 0 ? (
+          noteChips.map((note, index) => (
+            <span
+              key={`${note}-${index}`}
+              className={cn(
+                "rounded-full border border-white/[0.1] bg-white/[0.06] px-3 py-1 text-[12px] font-semibold tracking-[0.02em]",
+                silent ? "text-slate-400" : "text-slate-100",
+              )}
+            >
+              {note}
+            </span>
+          ))
+        ) : (
+          <span className="text-[11px] text-slate-400">
+            Toca un acorde de 3 o 4 notas
+          </span>
+        )}
+        {intervalChips.map((chip, index) => (
+          <span
+            key={`${chip}-${index}`}
+            className="rounded-full bg-royal/20 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.06em] text-sky-200"
+          >
+            {chip}
+          </span>
+        ))}
+      </div>
+
+      {fingering && (
+        <div className="mt-3 flex items-center justify-center gap-2 rounded-2xl border border-sky-400/20 bg-sky-400/[0.06] px-3 py-2">
+          <span className="flex items-center gap-1">
+            <span className="grid h-5 w-5 place-items-center rounded-full bg-sky-400/25 text-[10px] font-bold text-sky-100">
+              1
+            </span>
+            <span className="text-[10px] font-semibold text-slate-200">Pulgar</span>
+          </span>
+          <span className="text-slate-500">·</span>
+          <span className="flex items-center gap-1">
+            <span className="grid h-5 w-5 place-items-center rounded-full bg-sky-400/25 text-[10px] font-bold text-sky-100">
+              3
+            </span>
+            <span className="text-[10px] font-semibold text-slate-200">Medio</span>
+          </span>
+          <span className="text-slate-500">·</span>
+          <span className="flex items-center gap-1">
+            <span className="grid h-5 w-5 place-items-center rounded-full bg-sky-400/25 text-[10px] font-bold text-sky-100">
+              5
+            </span>
+            <span className="text-[10px] font-semibold text-slate-200">Meñique</span>
+          </span>
+        </div>
+      )}
+
+      <div className="staff-glass mt-3 overflow-hidden rounded-2xl border border-white/[0.06]">
+        <StaffSvg activeMidis={activeMidis} ghostMidis={ghostMidis} />
       </div>
     </section>
   );

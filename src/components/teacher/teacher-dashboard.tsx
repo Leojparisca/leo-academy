@@ -4,10 +4,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUpRight,
   Award,
+  Brain,
   CalendarCheck,
   Check,
   ChevronDown,
   Clock3,
+  Eye,
   Gauge,
   GraduationCap,
   KeyRound,
@@ -54,7 +56,6 @@ import {
 import { clamp, formatMinutes, formatShortDate } from "@/lib/utils";
 import {
   addStudentAction,
-  changeTeacherPinAction,
   logoutTeacherAction,
   regenerateStudentCodeAction,
   saveAttendanceAction,
@@ -106,6 +107,56 @@ const AVATAR_TONE: Record<string, string> = {
   cyan: "bg-[linear-gradient(145deg,#1a8fb7,#0a425e)] text-[#dcf7ff]",
   slate: "bg-[linear-gradient(145deg,#3a4c63,#18222f)] text-[#e6edf5]",
 };
+
+export type LearningStyle = {
+  label: string;
+  icon: typeof Eye;
+  className: string;
+};
+
+/** Dominant radar axis → how this student learns best. */
+export function learningStyleFor(radar: {
+  melody: number;
+  harmony: number;
+  rhythm: number;
+}): LearningStyle | null {
+  const axes = [
+    { key: "rhythm", value: radar.rhythm },
+    { key: "melody", value: radar.melody },
+    { key: "harmony", value: radar.harmony },
+  ] as const;
+  const dominant = axes.reduce(
+    (best, axis) => (axis.value > best.value ? axis : best),
+    axes[0],
+  );
+  if (dominant.value <= 0) {
+    return {
+      label: "Visual",
+      icon: Eye,
+      className: "border-sky-400/20 bg-sky-400/[0.06] text-sky-200/80",
+    };
+  }
+
+  if (dominant.key === "rhythm") {
+    return {
+      label: "Kinestésico",
+      icon: Gauge,
+      className: "border-cyan-400/25 bg-cyan-400/[0.08] text-cyan-200",
+    };
+  }
+  if (dominant.key === "melody") {
+    return {
+      label: "Visual",
+      icon: Eye,
+      className: "border-sky-400/25 bg-sky-400/[0.08] text-sky-200",
+    };
+  }
+  return {
+    label: "Lógico",
+    icon: Brain,
+    className: "border-indigo-400/25 bg-indigo-400/[0.08] text-indigo-200",
+  };
+}
 
 function Field({
   label,
@@ -415,14 +466,6 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
   });
   const [savingAttendance, setSavingAttendance] = useState(false);
   const [attendanceResult, setAttendanceResult] = useState<Notice>(null);
-
-  const [pinForm, setPinForm] = useState({
-    currentPin: "",
-    newPin: "",
-    confirmPin: "",
-  });
-  const [savingPin, setSavingPin] = useState(false);
-  const [pinResult, setPinResult] = useState<Notice>(null);
 
   const [codeBusy, setCodeBusy] = useState<string | null>(null);
   const [codeResult, setCodeResult] = useState<Notice>(null);
@@ -807,25 +850,6 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
     });
   };
 
-  const submitPin = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (savingPin) return;
-    setSavingPin(true);
-    setPinResult(null);
-
-    const response = await changeTeacherPinAction(pinForm);
-    if (response.ok) {
-      setPinResult({
-        tone: "success",
-        message: "PIN del profesor actualizado. Úsalo la próxima vez.",
-      });
-      setPinForm({ currentPin: "", newPin: "", confirmPin: "" });
-    } else {
-      setPinResult({ tone: "error", message: response.error });
-    }
-    setSavingPin(false);
-  };
-
   const regenerateCode = async (id: string) => {
     if (codeBusy) return;
     setCodeBusy(id);
@@ -847,29 +871,26 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
     <div className="space-y-6">
       <header>
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <span className="status-dot text-emerald-300" />
-            <p className="eyebrow">Mesa del profesor · Sesión verificada</p>
-          </div>
+          <p className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-[10px] font-medium text-slate-300 backdrop-blur-xl">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]" />
+            Mesa del profesor · Sesión verificada
+          </p>
           <button
             type="button"
             onClick={() => void logout()}
             disabled={loggingOut}
-            className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[8px] font-semibold uppercase tracking-[0.14em] text-faint transition-colors hover:bg-white/[0.04] hover:text-ivory"
+            className="flex h-10 flex-none items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-3 text-[10px] font-semibold text-slate-300 transition-colors hover:text-white disabled:opacity-50"
           >
-            <LogOut size={11} />
-            Salir
+            <LogOut size={13} />
+            {loggingOut ? "Saliendo…" : "Salir"}
           </button>
         </div>
-        <h1 className="mt-3.5 font-display text-[39px] leading-[0.93] tracking-[-0.035em] text-ivory">
-          La mesa del
-          <br />
-          <em className="sapphire-text font-normal italic">profesor</em>
-          <span className="text-glow">.</span>
+        <h1 className="mt-4 text-[32px] font-bold leading-[1.05] tracking-[-0.03em] text-white">
+          La mesa del <span className="text-sky-300">profesor</span>.
         </h1>
-        <p className="mt-3 max-w-[300px] text-[10.5px] leading-[1.6] text-muted">
-          Evalúa en vivo, abre puertas y registra la clase. Todo lo que escribas
-          viaja directo a SQLite, en el servidor.
+        <p className="mt-2 max-w-[320px] text-[12px] leading-relaxed text-slate-300">
+          Evalúa en vivo, abre puertas y registra la clase. Todo se guarda en el
+          servidor y en este dispositivo.
         </p>
       </header>
 
@@ -882,10 +903,10 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
       )}
 
       <section
-        className="neu-card overflow-hidden rounded-[22px]"
+        className="overflow-hidden rounded-3xl border border-white/[0.08] bg-[#0E1524]/80 backdrop-blur-xl"
         aria-label="Resumen de la academia"
       >
-        <div className="grid grid-cols-3 divide-x divide-white/[0.055]">
+        <div className="grid grid-cols-3 divide-x divide-white/[0.06]">
           {[
             { icon: Users, label: "Alumnos", value: visibleStudents.length },
             {
@@ -901,24 +922,24 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
           ].map((stat) => (
             <div
               key={stat.label}
-              className="flex flex-col items-center gap-1.5 px-1 py-3.5"
+              className="flex flex-col items-center gap-1.5 px-1 py-4"
             >
-              <stat.icon size={12} className="text-glow/65" />
-              <span className="font-display text-[20px] leading-none text-ivory">
+              <stat.icon size={14} className="text-sky-300/80" />
+              <span className="text-[22px] font-bold leading-none tabular-nums text-white">
                 {stat.value}
               </span>
-              <span className="text-center text-[6.5px] font-semibold uppercase tracking-[0.13em] text-faint">
+              <span className="text-center text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400">
                 {stat.label}
               </span>
             </div>
           ))}
         </div>
-        <div className="flex items-center justify-between border-t border-white/[0.055] px-4 py-2.5 text-[7.5px]">
-          <span className="flex items-center gap-1.5 font-semibold uppercase tracking-[0.12em] text-faint">
-            <Clock3 size={9} />
+        <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-3 text-[10px]">
+          <span className="flex items-center gap-1.5 font-semibold uppercase tracking-[0.1em] text-slate-400">
+            <Clock3 size={11} />
             Minutos acumulados
           </span>
-          <span className="font-display text-[10px] text-ivory/80">
+          <span className="text-[12px] font-bold text-white">
             {formatMinutes(data.totalMinutes)}
           </span>
         </div>
@@ -1329,7 +1350,7 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
         <div className="mt-3 space-y-2.5">
           {visibleStudents.map((student) => {
             const pending = pendingById.get(student.id);
-            const radar = data.radar[student.id] ?? {
+            const baseRadar = data.radar[student.id] ?? {
               melody: 0,
               harmony: 0,
               rhythm: 0,
@@ -1337,17 +1358,33 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
             const latest = data.evaluations.find(
               (evaluation) => evaluation.studentId === student.id,
             );
+            // Skill scores are the source of truth; a teacher evaluation is the
+            // fallback so a brand-new student still shows a learning style.
+            const hasSkillData =
+              baseRadar.melody + baseRadar.harmony + baseRadar.rhythm > 0;
+            const radar =
+              hasSkillData || !latest
+                ? baseRadar
+                : {
+                    melody: latest.melody,
+                    harmony: latest.harmony,
+                    rhythm: latest.rhythm,
+                  };
             const open = editingId === student.id;
+            const style = learningStyleFor(radar);
 
             return (
               <article
                 key={student.id}
-                className="neu-card overflow-hidden rounded-[20px]"
+                className={cn(
+                  "overflow-hidden rounded-3xl border bg-[#0E1524]/80 backdrop-blur-xl transition-colors",
+                  open ? "border-sky-400/25" : "border-white/[0.08]",
+                )}
               >
-                <div className="flex items-center gap-3 px-4 py-3">
+                <div className="flex items-center gap-3 px-3.5 py-3">
                   <span
                     className={cn(
-                      "grid h-9 w-9 flex-none place-items-center rounded-[11px] text-[9.5px] font-bold shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]",
+                      "grid h-11 w-11 flex-none place-items-center rounded-full text-[12px] font-bold ring-1 ring-white/15",
                       AVATAR_TONE[student.avatarTone] ?? AVATAR_TONE.sapphire,
                     )}
                   >
@@ -1355,37 +1392,53 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
                   </span>
 
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[11.5px] font-semibold text-ivory/90">
-                      {student.name}
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <p className="truncate text-[14px] font-bold leading-tight text-white">
+                        {student.name}
+                      </p>
+                      {style && (
+                        <span
+                          className={cn(
+                            "inline-flex flex-none items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-semibold",
+                            style.className,
+                          )}
+                        >
+                          <style.icon size={9} />
+                          {style.label}
+                        </span>
+                      )}
+                    </div>
+
+                    <p className="mt-0.5 truncate text-[10px] font-medium text-slate-400">
+                      {student.age != null ? `${student.age} años · ` : ""}
+                      hasta N{String(student.currentLevel).padStart(2, "0")} ·{" "}
+                      {student.streakDays} d de racha
                     </p>
-                    <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[7.5px] text-faint">
-                      <span>
-                        {student.age != null ? `${student.age} años · ` : ""}
-                        hasta N{String(student.currentLevel).padStart(2, "0")} ·{" "}
-                        {student.streakDays} d de racha
-                      </span>
-                      <span className="inline-flex items-center gap-1 rounded-full border border-cyan-300/15 bg-cyan-300/[0.05] px-1.5 py-0.5 text-[6.5px] font-semibold tracking-[0.1em] text-glow/85">
-                        <KeyRound size={7} />
+
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-sky-400/20 bg-sky-400/[0.07] px-2 py-0.5 text-[9px] font-bold tracking-[0.06em] text-sky-200">
+                        <KeyRound size={9} />
                         {pending
                           ? pending.code
                           : (data.studentCodes[student.id] ?? "—")}
                       </span>
                       {pending && (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/[0.06] px-1.5 py-0.5 text-[6px] font-semibold uppercase tracking-[0.1em] text-amber-200/90">
-                          <RefreshCw size={7} className="animate-spin" />
+                        <span className="inline-flex items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/[0.06] px-2 py-0.5 text-[9px] font-semibold text-amber-200/90">
+                          <RefreshCw size={8} className="animate-spin" />
                           Sin sincronizar
                         </span>
                       )}
-                    </p>
-                    <div className="mt-1.5 flex items-center gap-1">
+                    </div>
+
+                    <div className="mt-2 flex items-center gap-1">
                       {LEVELS.map((level) => (
                         <span
                           key={level.id}
                           className={cn(
-                            "h-[3px] flex-1 rounded-full",
+                            "h-1 flex-1 rounded-full",
                             level.ordinal <= student.currentLevel
                               ? "bg-[linear-gradient(90deg,#0D6EFD,#38BDF8)]"
-                              : "bg-white/[0.06]",
+                              : "bg-white/[0.07]",
                           )}
                         />
                       ))}
@@ -1393,7 +1446,7 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
                   </div>
 
                   <div className="flex flex-none items-center gap-1.5">
-                    <StudentRadar data={radar} size={64} muted compact />
+                    <StudentRadar data={radar} size={56} muted compact />
                     <button
                       type="button"
                       onClick={() =>
@@ -1402,10 +1455,10 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
                       disabled={Boolean(pending)}
                       aria-expanded={open}
                       className={cn(
-                        "grid h-7 w-7 place-items-center rounded-[9px] border text-[9px] transition-colors disabled:opacity-40",
+                        "grid h-10 w-10 place-items-center rounded-full border transition-colors disabled:opacity-40",
                         open
-                          ? "border-cyan-300/25 bg-cyan-300/10 text-glow"
-                          : "border-white/[0.07] bg-white/[0.02] text-faint hover:text-ivory",
+                          ? "border-sky-400/30 bg-sky-400/10 text-sky-200"
+                          : "border-white/[0.08] bg-white/[0.04] text-slate-300 hover:text-white",
                       )}
                       aria-label={
                         pending
@@ -1415,7 +1468,7 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
                             : `Editar perfil de ${student.name}`
                       }
                     >
-                      <NotebookPen size={12} />
+                      <NotebookPen size={14} />
                     </button>
                   </div>
                 </div>
@@ -1914,7 +1967,7 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
         <SectionHeading
           id="pin-profesor"
           index="07"
-          title="PIN del profesor"
+          title="Acceso del profesor"
           meta={
             <span className="flex items-center gap-1 text-[7px] font-semibold uppercase tracking-[0.12em] text-faint">
               <KeyRound size={9} />
@@ -1923,103 +1976,23 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
           }
         />
 
-        <form
-          onSubmit={submitPin}
-          className="neu-card mt-3 space-y-3 rounded-[20px] p-4"
-        >
+        <div className="neu-card mt-3 space-y-2 rounded-[20px] p-4">
+          <p className="flex items-center gap-2 text-[9.5px] font-semibold text-ivory">
+            <ShieldCheck size={12} className="text-glow/80" />
+            El PIN se gestiona en el servidor
+          </p>
           <p className="text-[8.5px] leading-relaxed text-faint">
-            El PIN abre esta mesa. Puedes rotarlo cuando quieras: se guarda como
-            hash con sal en SQLite, nunca en texto plano.
+            Por seguridad, esta mesa ya no muestra ni permite cambiar la clave.
+            El PIN del profesor vive únicamente en las variables de entorno de
+            tu servidor.
           </p>
-
-          <div className="grid grid-cols-3 gap-2">
-            <Field label="PIN actual">
-              <input
-                className="neu-input text-center font-display tracking-[0.28em]"
-                type="password"
-                inputMode="numeric"
-                autoComplete="current-password"
-                maxLength={4}
-                pattern="\d{4}"
-                value={pinForm.currentPin}
-                onChange={(event) =>
-                  setPinForm((current) => ({
-                    ...current,
-                    currentPin: event.target.value.replace(/\D/g, "").slice(0, 4),
-                  }))
-                }
-                placeholder="••••"
-                required
-              />
-            </Field>
-            <Field label="Nuevo PIN">
-              <input
-                className="neu-input text-center font-display tracking-[0.28em]"
-                type="password"
-                inputMode="numeric"
-                autoComplete="new-password"
-                maxLength={4}
-                pattern="\d{4}"
-                value={pinForm.newPin}
-                onChange={(event) =>
-                  setPinForm((current) => ({
-                    ...current,
-                    newPin: event.target.value.replace(/\D/g, "").slice(0, 4),
-                  }))
-                }
-                placeholder="••••"
-                required
-              />
-            </Field>
-            <Field label="Repetir">
-              <input
-                className="neu-input text-center font-display tracking-[0.28em]"
-                type="password"
-                inputMode="numeric"
-                autoComplete="new-password"
-                maxLength={4}
-                pattern="\d{4}"
-                value={pinForm.confirmPin}
-                onChange={(event) =>
-                  setPinForm((current) => ({
-                    ...current,
-                    confirmPin: event.target.value.replace(/\D/g, "").slice(0, 4),
-                  }))
-                }
-                placeholder="••••"
-                required
-              />
-            </Field>
-          </div>
-
-          {pinResult && (
-            <p
-              className={cn(
-                "text-[8.5px]",
-                pinResult.tone === "success" ? "text-glow/90" : "text-ember/90",
-              )}
-            >
-              {pinResult.message}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={savingPin || disabled}
-            className="neu-button w-full rounded-[12px] py-2.5 text-[9.5px] disabled:opacity-50"
-          >
-            <ShieldCheck size={12} />
-            {savingPin ? "Guardando…" : "Cambiar PIN del profesor"}
-          </button>
-
           <p className="rounded-[11px] border border-white/[0.05] bg-white/[0.015] px-3 py-2 text-[7.5px] leading-relaxed text-faint/80">
-            PIN inicial de la academia:{" "}
-            <span className="font-semibold tracking-[0.16em] text-glow/85">
-              1006
-            </span>{" "}
-            · día y mes de cumpleaños del profe.
+            Para rotarlo, edita{" "}
+            <span className="font-semibold text-ivory/80">TEACHER_PIN</span> o{" "}
+            <span className="font-semibold text-ivory/80">PROFESSOR_PIN</span>{" "}
+            y reinicia la aplicación.
           </p>
-        </form>
+        </div>
       </section>
 
       <BackupPanel />

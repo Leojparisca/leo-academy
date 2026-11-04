@@ -15,7 +15,7 @@ function studentSecret() {
     process.env.STUDENT_SESSION_SECRET?.trim() ||
     (process.env.TEACHER_SESSION_SECRET
       ? `${process.env.TEACHER_SESSION_SECRET}.student`
-      : `leo-academy:student:${process.env.PROFESSOR_PIN ?? process.env.TEACHER_PIN ?? "1006"}`)
+      : `leo-academy:student:${process.env.TEACHER_PIN ?? process.env.PROFESSOR_PIN ?? "5864"}`)
   );
 }
 

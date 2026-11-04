@@ -10,6 +10,8 @@ const config: Config = {
     extend: {
       colors: {
         abyss: "var(--bg-abyss)",
+        canvas: "#060911",
+        panel: "#0E1524",
         sapphire: {
           surface: "var(--bg-sapphire-surface)",
           elevated: "var(--bg-sapphire-elevated)",
@@ -20,6 +22,7 @@ const config: Config = {
         muted: "var(--text-muted)",
         faint: "var(--text-faint)",
         ember: "var(--accent-ember)",
+        gold: "var(--accent-gold)",
       },
       fontFamily: {
         display: ["var(--font-display)", "Iowan Old Style", "Palatino", "serif"],
@@ -30,12 +33,12 @@ const config: Config = {
         "neu-lg": "32px",
       },
       boxShadow: {
-        deep: "8px 8px 18px #03070D, -6px -6px 16px rgba(30, 95, 180, 0.12)",
-        "deep-sm":
-          "5px 5px 12px #03070D, -4px -4px 10px rgba(30, 95, 180, 0.1)",
-        inset:
-          "inset 5px 5px 12px #03070D, inset -4px -4px 10px rgba(30, 95, 180, 0.12)",
+        deep: "0 22px 44px -30px rgba(0,0,0,0.95)",
+        "deep-sm": "0 14px 28px -20px rgba(0,0,0,0.9)",
+        inset: "inset 0 1px 0 rgba(255,255,255,0.06)",
         glow: "0 0 28px rgba(56, 189, 248, 0.18)",
+        float: "0 24px 48px -20px rgba(0, 0, 0, 0.9)",
+        sapphire: "0 16px 32px -14px rgba(13, 110, 253, 0.7)",
       },
       transitionTimingFunction: {
         silk: "cubic-bezier(0.22, 1, 0.36, 1)",

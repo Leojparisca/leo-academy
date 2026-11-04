@@ -15,7 +15,6 @@ import {
   isTeacherAuthenticated,
   rateLimitStatus,
   recordFailedAttempt,
-  saveTeacherPinHash,
   verifyTeacherPin,
 } from "@/server/auth/teacher-session";
 import { getReadyDb } from "@/server/db/client";
@@ -681,60 +680,6 @@ export async function unlockLevelAction(
   });
 
   return result.ok ? { ok: true, data: null } : result;
-}
-
-const pinChangeSchema = z
-  .object({
-    currentPin: z.string().length(4).regex(/^\d{4}$/),
-    newPin: z.string().length(4).regex(/^\d{4}$/),
-    confirmPin: z.string().length(4).regex(/^\d{4}$/),
-  })
-  .refine((data) => data.newPin === data.confirmPin, {
-    message: "PIN_MISMATCH",
-    path: ["confirmPin"],
-  });
-
-/** Rotates the teacher PIN from inside the authenticated panel. */
-export async function changeTeacherPinAction(
-  input: unknown,
-): Promise<ActionResult<{ changed: true }>> {
-  if (!(await isTeacherAuthenticated())) {
-    return {
-      ok: false,
-      error: "La sesión del profesor ha caducado. Vuelve a entrar.",
-      code: "UNAUTHORIZED",
-    };
-  }
-
-  const parsed = pinChangeSchema.safeParse(input);
-  if (!parsed.success) {
-    return {
-      ok: false,
-      error: "El PIN debe tener 4 dígitos y la confirmación debe coincidir.",
-      code: "INVALID_INPUT",
-    };
-  }
-
-  if (!(await verifyTeacherPin(parsed.data.currentPin))) {
-    return {
-      ok: false,
-      error: "El PIN actual no coincide.",
-      code: "PIN_MISMATCH",
-    };
-  }
-
-  try {
-    await saveTeacherPinHash(parsed.data.newPin);
-    revalidatePath("/profesor");
-    return { ok: true, data: { changed: true } };
-  } catch (error) {
-    console.error("[leo] Error al cambiar el PIN", error);
-    return {
-      ok: false,
-      error: "No se pudo guardar el nuevo PIN.",
-      code: "DB_ERROR",
-    };
-  }
 }
 
 const studentCodeSchema = z.object({

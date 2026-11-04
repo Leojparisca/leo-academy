@@ -1,18 +1,9 @@
 import "server-only";
 
-import {
-  createHmac,
-  randomBytes,
-  scryptSync,
-  timingSafeEqual,
-} from "node:crypto";
-import { eq } from "drizzle-orm";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { cookies, headers } from "next/headers";
-import { getReadyDb } from "@/server/db/client";
-import { appSettings } from "@/server/db/schema";
 
 const COOKIE_NAME = "leo_teacher";
-const TEACHER_PIN_KEY = "teacher_pin_hash";
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
@@ -40,15 +31,15 @@ function sessionSecret() {
 }
 
 /**
- * The PIN has a usable classroom default; a deployment can override it with
- * `PROFESSOR_PIN` (or the legacy `TEACHER_PIN`), and the teacher can rotate it
- * from the panel (stored as a salted scrypt hash in the database).
+ * The PIN is owned exclusively by the server environment. `TEACHER_PIN` takes
+ * precedence, then the legacy `PROFESSOR_PIN`; the fallback only keeps local
+ * development usable and is never surfaced in the UI.
  */
 export function getTeacherPin(): string {
   return (
-    process.env.PROFESSOR_PIN?.trim() ||
     process.env.TEACHER_PIN?.trim() ||
-    "1006"
+    process.env.PROFESSOR_PIN?.trim() ||
+    "5864"
   );
 }
 
@@ -56,23 +47,7 @@ export function isTeacherPinConfigured() {
   return true;
 }
 
-export function hashPin(pin: string) {
-  const salt = randomBytes(16).toString("hex");
-  const digest = scryptSync(pin, salt, 32).toString("hex");
-  return `${salt}:${digest}`;
-}
-
-export function verifyHashedPin(pin: string, stored: string) {
-  const [salt, digest] = stored.split(":");
-  if (!salt || !digest) return false;
-  const candidate = scryptSync(pin, salt, 32).toString("hex");
-  const a = Buffer.from(candidate);
-  const b = Buffer.from(digest);
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
-
-/** Constant-time comparison against the environment/default PIN. */
+/** Constant-time comparison against the environment PIN. */
 export function pinMatches(input: string) {
   const expected = getTeacherPin();
   const a = Buffer.from(input.padEnd(32, "\0"));
@@ -82,35 +57,11 @@ export function pinMatches(input: string) {
 }
 
 /**
- * Checks the teacher PIN, preferring the hash stored from the panel. Falls
- * back to PROFESSOR_PIN / 1006 when the database is unavailable.
+ * Validates the teacher PIN against the environment only. There is no in-app
+ * rotation and no database fallback: changing the PIN means changing the env.
  */
 export async function verifyTeacherPin(input: string) {
-  try {
-    const db = await getReadyDb();
-    const rows = await db
-      .select()
-      .from(appSettings)
-      .where(eq(appSettings.key, TEACHER_PIN_KEY))
-      .limit(1);
-    const row = rows[0];
-    if (row?.value) return verifyHashedPin(input, row.value);
-  } catch {
-    // Database offline: the environment default still opens the door.
-  }
   return pinMatches(input);
-}
-
-export async function saveTeacherPinHash(pin: string) {
-  const now = new Date().toISOString();
-  const db = await getReadyDb();
-  await db
-    .insert(appSettings)
-    .values({ key: TEACHER_PIN_KEY, value: hashPin(pin), updatedAt: now })
-    .onConflictDoUpdate({
-      target: appSettings.key,
-      set: { value: hashPin(pin), updatedAt: now },
-    });
 }
 
 function sign(value: string) {

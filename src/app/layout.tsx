@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Manrope, Playfair_Display } from "next/font/google";
+import { Google_Sans, Playfair_Display } from "next/font/google";
 import "./globals.css";
 import { ServiceWorkerRegistrar } from "@/components/system/service-worker-registrar";
 
@@ -11,11 +11,12 @@ const display = Playfair_Display({
   style: ["normal", "italic"],
 });
 
-const sans = Manrope({
+const sans = Google_Sans({
   subsets: ["latin"],
   variable: "--font-sans",
   display: "swap",
-  weight: ["400", "500", "600", "700", "800"],
+  weight: ["400", "500", "600", "700"],
+  adjustFontFallback: false,
 });
 
 const siteUrl = process.env.SITE_URL ?? "http://localhost:3000";

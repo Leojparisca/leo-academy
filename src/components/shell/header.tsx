@@ -16,7 +16,7 @@ function StreakChip() {
 
   return (
     <div
-      className="neu-pill hidden min-[355px]:flex h-9 min-h-0 gap-1.5 border-ember/10 px-2 py-1 text-ember/90 sm:flex"
+      className="neu-pill hidden min-[355px]:flex h-9 min-h-0 gap-1.5 border-ember/15 bg-ember/[0.06] px-2.5 py-1 text-ember sm:flex"
       title={`Racha de estudio: ${activeStudent.streakDays} días`}
     >
       <Flame
@@ -26,10 +26,10 @@ function StreakChip() {
         strokeWidth={1.4}
       />
       <span className="flex items-baseline gap-1">
-        <span className="text-[13px] font-bold leading-none tracking-tight text-ivory">
+        <span className="text-[13px] font-bold leading-none tracking-tight text-white">
           {activeStudent.streakDays}
         </span>
-        <span className="text-[7.5px] font-semibold uppercase tracking-[0.13em] text-faint">
+        <span className="text-[9px] font-semibold uppercase tracking-[0.1em] text-ember/90">
           días
         </span>
       </span>
@@ -70,7 +70,7 @@ function SyncStatus() {
     <div
       className={cn(
         "hidden min-[398px]:flex items-center gap-1.5",
-        "text-[8px] font-semibold uppercase tracking-[0.16em]",
+        "text-[9px] font-semibold uppercase tracking-[0.14em]",
         tone,
       )}
       aria-live="polite"
@@ -93,15 +93,6 @@ export function Header() {
             aria-label="Leo Academy, ir al mapa"
           >
             <BrandMark size={42} priority className="transition-transform duration-500 group-hover:scale-[1.03]" />
-            <span className="min-w-0">
-              <span className="block truncate font-display text-[18px] font-medium leading-none tracking-[-0.015em] text-ivory">
-                Leo Academy
-              </span>
-              <span className="mt-1 block truncate text-[7px] font-semibold uppercase tracking-[0.23em] text-faint">
-                Piano · Teoría
-                <span className="hidden min-[420px]:inline"> · Armonía</span>
-              </span>
-            </span>
           </Link>
 
           <div className="flex flex-none items-center gap-1.5">
