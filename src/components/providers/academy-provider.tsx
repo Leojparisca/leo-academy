@@ -61,6 +61,8 @@ type LogPracticeInput = {
   minutes: number;
   skill: Skill;
   score?: number;
+  /** The caller already shows its own compact confirmation (passive studio). */
+  quiet?: boolean;
 };
 
 type CurriculumResultInput = {
@@ -611,7 +613,13 @@ export function AcademyProvider({
   }, [offlineMode, passThePhone, pushLive, studentMode]);
 
   const logPractice = useCallback(
-    async ({ levelId, minutes, skill, score = 80 }: LogPracticeInput) => {
+    async ({
+      levelId,
+      minutes,
+      skill,
+      score = 80,
+      quiet = false,
+    }: LogPracticeInput) => {
       if (!activeStudent) return;
 
       const safeMinutes = clamp(Math.round(minutes), 1, 180);
@@ -694,12 +702,14 @@ export function AcademyProvider({
       setPendingSync(await pendingMutationCount());
       sendLiveEvent(skill, safeScore, `Sesión · ${getLevel(activeStudent.currentLevel).title}`);
 
-      notify(
-        queued
-          ? `Sesión de ${safeMinutes} min guardada sin luz. Se sincronizará al volver la conexión.`
-          : `Sesión de ${safeMinutes} min enviada a la academia.`,
-        queued ? "warning" : "success",
-      );
+      if (!quiet) {
+        notify(
+          queued
+            ? `Sesión de ${safeMinutes} min guardada sin luz. Se sincronizará al volver la conexión.`
+            : `Sesión de ${safeMinutes} min enviada a la academia.`,
+          queued ? "warning" : "success",
+        );
+      }
     },
     [
       activeStudent,

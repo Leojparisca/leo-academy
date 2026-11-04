@@ -29,6 +29,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InlineNotice } from "@/components/shell/neo-toast";
 import { BackupPanel } from "@/components/teacher/backup-panel";
+import { BulkAttendance } from "@/components/teacher/bulk-attendance";
 import { LiveClassroom } from "@/components/teacher/live-classroom";
 import { StudentRadar } from "@/components/teacher/student-radar";
 import { SectionHeading } from "@/components/ui/section-heading";
@@ -1688,6 +1689,8 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
             </span>
           }
         />
+
+        <BulkAttendance students={data.students} disabled={disabled} />
 
         <form
           onSubmit={submitAttendance}

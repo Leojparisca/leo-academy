@@ -1,7 +1,7 @@
 "use server";
 
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import type { ActionResult } from "@/lib/academy";
@@ -573,6 +573,92 @@ export async function saveAttendanceAction(
     return {
       ok: false,
       error: "No se pudo registrar la asistencia.",
+      code: "DB_ERROR",
+    };
+  }
+}
+
+/**
+ * "Pasar Lista Grupal": one atomic transaction for the whole classroom. Every
+ * selected student gets the same day note and modality; re-saving the day is an
+ * idempotent upsert thanks to the (student_id, date) unique index.
+ */
+const classAttendanceSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  mode: z.enum(["normal", "unplugged"]),
+  notes: z.string().trim().max(400).optional(),
+  studentIds: z.array(z.string().min(3).max(80)).min(1).max(200),
+});
+
+export async function saveClassAttendanceAction(
+  input: unknown,
+): Promise<
+  ActionResult<{
+    saved: number;
+    date: string;
+    mode: "normal" | "unplugged";
+  }>
+> {
+  if (!(await isTeacherAuthenticated())) {
+    return { ok: false, error: "No autorizado.", code: "UNAUTHORIZED" };
+  }
+
+  const parsed = classAttendanceSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: "Elige una fecha, un modo y al menos un alumno.",
+      code: "INVALID_INPUT",
+    };
+  }
+
+  const { date, mode, studentIds } = parsed.data;
+  const notes = parsed.data.notes?.trim() || null;
+  const unique = [...new Set(studentIds)];
+
+  try {
+    const db = await getReadyDb();
+    const existing = await db
+      .select({ id: students.id })
+      .from(students)
+      .where(inArray(students.id, unique));
+
+    if (existing.length !== unique.length) {
+      return {
+        ok: false,
+        error: "Alguno de los alumnos ya no está en la academia.",
+        code: "NOT_FOUND",
+      };
+    }
+
+    const now = new Date().toISOString();
+    await db.transaction(async (tx) => {
+      for (const studentId of unique) {
+        await tx
+          .insert(attendance)
+          .values({
+            id: `att_${randomUUID()}`,
+            studentId,
+            date,
+            mode,
+            notes,
+            createdAt: now,
+          })
+          .onConflictDoUpdate({
+            target: [attendance.studentId, attendance.date],
+            set: { mode, notes, createdAt: now },
+          });
+      }
+    });
+
+    revalidatePath("/profesor");
+    revalidatePath("/mapa");
+    return { ok: true, data: { saved: unique.length, date, mode } };
+  } catch (error) {
+    console.error("[leo] Error al pasar lista grupal", error);
+    return {
+      ok: false,
+      error: "No se pudo guardar la asistencia de la clase.",
       code: "DB_ERROR",
     };
   }

@@ -25,6 +25,11 @@ export function useAudioEngine() {
     engine.getReady,
     () => false,
   );
+  const silent = useSyncExternalStore(
+    engine.subscribe,
+    engine.getSilent,
+    () => false,
+  );
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
 
   useEffect(() => {
@@ -79,6 +84,7 @@ export function useAudioEngine() {
     () => ({
       engine,
       ready,
+      silent,
       analyser,
       unlock,
       noteOn,
@@ -96,6 +102,7 @@ export function useAudioEngine() {
     [
       engine,
       ready,
+      silent,
       analyser,
       unlock,
       noteOn,

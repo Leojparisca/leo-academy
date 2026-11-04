@@ -9,7 +9,12 @@
  */
 
 import Dexie, { type EntityTable } from "dexie";
-import { ACTIVE_STUDENT_KEY, type Skill, type Student } from "@/lib/academy";
+import {
+  ACTIVE_STUDENT_KEY,
+  type AttendanceMode,
+  type Skill,
+  type Student,
+} from "@/lib/academy";
 import {
   BACKUP_LIMITS,
   BACKUP_STAMP_KEY,
@@ -76,6 +81,17 @@ export type LocalXpEntry = {
   synced: 0 | 1;
 };
 
+/** Mirror of the SQLite attendance row used by "Pasar Lista Grupal". */
+export type LocalAttendance = {
+  id?: number;
+  studentId: string;
+  date: string;
+  mode: AttendanceMode;
+  notes: string | null;
+  createdAt: string;
+  synced: 0 | 1;
+};
+
 export type PracticePayload = {
   clientId: string;
   studentId: string;
@@ -112,6 +128,7 @@ class AcademyLocalDatabase extends Dexie {
   offlineQueue!: EntityTable<OfflineMutation, "id">;
   curriculumProgress!: EntityTable<LocalCurriculumProgress, "id">;
   xpLedger!: EntityTable<LocalXpEntry, "id">;
+  attendance!: EntityTable<LocalAttendance, "id">;
 
   constructor() {
     super("leo-academy");
@@ -131,6 +148,17 @@ class AcademyLocalDatabase extends Dexie {
       curriculumProgress:
         "++id, studentId, nodeId, branch, level, updatedAt, [studentId+nodeId]",
       xpLedger: "++id, studentId, source, createdAt, [studentId+source]",
+    });
+    this.version(3).stores({
+      students: "id, name, updatedAt",
+      lessonProgress:
+        "++id, studentId, levelId, updatedAt, [studentId+levelId]",
+      skillScores: "++id, studentId, skill, createdAt, [studentId+skill]",
+      offlineQueue: "++id, clientId, status, kind, createdAt",
+      curriculumProgress:
+        "++id, studentId, nodeId, branch, level, updatedAt, [studentId+nodeId]",
+      xpLedger: "++id, studentId, source, createdAt, [studentId+source]",
+      attendance: "++id, studentId, date, createdAt, [studentId+date]",
     });
   }
 }
@@ -384,6 +412,62 @@ export async function appendXp(input: {
     createdAt: new Date().toISOString(),
     synced: 0,
   });
+}
+
+/**
+ * Writes the whole class list in a single Dexie transaction, like the server
+ * action does in SQLite. Re-saving the same day updates instead of duplicating.
+ */
+export async function saveAttendanceBatchLocal(input: {
+  date: string;
+  mode: AttendanceMode;
+  notes: string | null;
+  studentIds: string[];
+}) {
+  const db = getLocalDb();
+  const now = new Date().toISOString();
+  const unique = [...new Set(input.studentIds)];
+
+  await db.transaction("rw", db.attendance, async () => {
+    for (const studentId of unique) {
+      const existing = await db.attendance
+        .where("[studentId+date]")
+        .equals([studentId, input.date])
+        .first();
+      if (existing) {
+        await db.attendance.update(existing.id!, {
+          mode: input.mode,
+          notes: input.notes,
+          createdAt: now,
+          synced: 0,
+        });
+      } else {
+        await db.attendance.add({
+          studentId,
+          date: input.date,
+          mode: input.mode,
+          notes: input.notes,
+          createdAt: now,
+          synced: 0,
+        });
+      }
+    }
+  });
+
+  return unique.length;
+}
+
+export async function markAttendanceSynced(
+  date: string,
+  studentIds: string[],
+) {
+  const db = getLocalDb();
+  const unique = new Set(studentIds);
+  await db.attendance
+    .where("date")
+    .equals(date)
+    .and((row) => unique.has(row.studentId))
+    .modify({ synced: 1 });
 }
 
 /**

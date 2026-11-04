@@ -7,6 +7,7 @@ import { useAcademy } from "@/components/providers/academy-provider";
 import { cn } from "@/lib/utils";
 import { OfflineToggle } from "./offline-toggle";
 import { StudentSelector } from "./student-selector";
+import { StudentTourButton } from "./student-tour";
 
 function StreakChip() {
   const { activeStudent } = useAcademy();
@@ -104,6 +105,7 @@ export function Header() {
           </Link>
 
           <div className="flex flex-none items-center gap-1.5">
+            <StudentTourButton />
             <StreakChip />
             <OfflineToggle />
           </div>

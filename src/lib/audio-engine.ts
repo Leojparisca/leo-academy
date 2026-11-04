@@ -159,9 +159,15 @@ class AudioEngine {
   private sustainOn = false;
   private ready = false;
   private maxVoices = 20;
+  private silent = false;
+  private hasPlayed = false;
+  private silenceTimer: number | null = null;
 
   /** Stable identity for useSyncExternalStore. */
   getReady = () => this.ready;
+
+  /** True when the context is suspended or the output measures as silence. */
+  getSilent = () => this.silent;
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -172,6 +178,51 @@ class AudioEngine {
 
   private notify() {
     for (const listener of this.listeners) listener();
+  }
+
+  private setSilent(next: boolean) {
+    if (this.silent === next) return;
+    this.silent = next;
+    this.notify();
+  }
+
+  /**
+   * Hardware mute is invisible to the Web Audio API, but a suspended context,
+   * a zero master volume or a route that never reaches the analyser all show up
+   * as silence. Probing shortly after a note starts catches the common cases
+   * (iOS silent switch context interruption, muted tab, volume at 0).
+   */
+  private scheduleSilenceCheck(delay = 360) {
+    if (typeof window === "undefined") return;
+    if (this.silenceTimer !== null) window.clearTimeout(this.silenceTimer);
+    this.silenceTimer = window.setTimeout(() => {
+      this.silenceTimer = null;
+      this.measureSilence();
+    }, delay);
+  }
+
+  private measureSilence() {
+    const context = this.context;
+    if (!context) return;
+    if (this.volume <= 0.5) {
+      this.setSilent(true);
+      return;
+    }
+    if (context.state !== "running") {
+      this.setSilent(true);
+      return;
+    }
+    const analyser = this.analyser;
+    if (!analyser) return;
+    const data = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(data);
+    let energy = 0;
+    for (let index = 0; index < data.length; index += 1) {
+      const sample = (data[index] - 128) / 128;
+      energy += sample * sample;
+    }
+    const rms = Math.sqrt(energy / data.length);
+    this.setSilent(rms < 0.0015);
   }
 
   getAnalyser() {
@@ -246,6 +297,12 @@ class AudioEngine {
       this.master = master;
       this.noise = makeNoise(context);
       this.ready = true;
+      context.onstatechange = () => {
+        this.notify();
+        if (!this.hasPlayed) return;
+        if (context.state !== "running") this.setSilent(true);
+        else this.scheduleSilenceCheck(160);
+      };
       this.notify();
       return context;
     } catch {
@@ -257,7 +314,13 @@ class AudioEngine {
     const context = this.ensureContext();
     if (!context) return false;
     if (context.state !== "running") {
-      void context.resume().then(() => this.notify()).catch(() => undefined);
+      void context
+        .resume()
+        .then(() => {
+          this.notify();
+          if (this.hasPlayed) this.scheduleSilenceCheck(160);
+        })
+        .catch(() => undefined);
     }
     return true;
   }
@@ -272,6 +335,13 @@ class AudioEngine {
         0.04,
       );
     }
+    if (this.hasPlayed) {
+      if (this.volume <= 0.5) this.setSilent(true);
+      else if (this.voices.size > 0) this.scheduleSilenceCheck(140);
+      // No note is sounding: trust the gesture that raised the volume instead of
+      // measuring an empty analyser and re-showing the warning immediately.
+      else this.setSilent(false);
+    }
   }
 
   setPreset(preset: EnginePreset) {
@@ -281,7 +351,9 @@ class AudioEngine {
   noteOn(midi: number, velocity = 0.8) {
     const context = this.ensureContext();
     if (!context) return false;
+    this.hasPlayed = true;
     if (context.state !== "running") void context.resume().catch(() => undefined);
+    this.scheduleSilenceCheck();
 
     const existing = this.voices.get(midi);
     if (existing) this.killVoice(existing, 0.015);
@@ -574,7 +646,9 @@ class AudioEngine {
   ) {
     const context = this.ensureContext();
     if (!context) return;
+    this.hasPlayed = true;
     if (context.state !== "running") void context.resume().catch(() => undefined);
+    this.scheduleSilenceCheck(520);
     const start = when ?? context.currentTime;
 
     if (kind === "kick") {

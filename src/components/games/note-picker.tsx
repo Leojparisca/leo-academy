@@ -12,6 +12,7 @@ const BLACK: Array<{ pc: number; after: number }> = [
   { pc: 8, after: 4 },
   { pc: 10, after: 5 },
 ];
+const FINGER_BY_PC: Record<number, 1 | 3 | 5> = { 0: 1, 4: 3, 7: 5 };
 
 /**
  * A one-octave pitch-class keyboard. Octave equivalence is intentional: the
@@ -22,11 +23,13 @@ export function NotePicker({
   onToggle,
   disabled = false,
   reveal,
+  fingering = false,
 }: {
   selected: number[];
   onToggle: (pc: number) => void;
   disabled?: boolean;
   reveal?: number[];
+  fingering?: boolean;
 }) {
   const audio = useAudioEngine();
   const chosen = new Set(selected);
@@ -50,9 +53,30 @@ export function NotePicker({
     >
       <div className="keyboard-felt" aria-hidden />
       <div className="relative flex h-full w-full gap-[2px]">
+        {fingering && (
+          <>
+            <span
+              aria-hidden
+              className="pointer-events-none absolute top-0 z-[1] h-[62%] rounded-b-[7px] border-x border-b border-cyan-300/20 bg-[linear-gradient(180deg,rgba(56,189,248,0.22),rgba(56,189,248,0.04)_60%,transparent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.14)]"
+              style={{
+                left: "calc(14.285% - 5.3%)",
+                width: "calc(14.285% + 10.6%)",
+              }}
+            />
+            <span
+              aria-hidden
+              className="pointer-events-none absolute top-0 z-[1] h-[62%] rounded-b-[7px] border-x border-b border-[#9DB5FF]/20 bg-[linear-gradient(180deg,rgba(157,181,255,0.22),rgba(90,120,230,0.04)_60%,transparent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.14)]"
+              style={{
+                left: "calc(57.143% - 5.3%)",
+                width: "calc(28.571% + 10.6%)",
+              }}
+            />
+          </>
+        )}
         {WHITE.map((pc) => {
           const active = chosen.has(pc);
           const hint = !active && revealed.has(pc);
+          const finger = fingering ? FINGER_BY_PC[pc] : undefined;
           return (
             <button
               key={pc}
@@ -70,6 +94,14 @@ export function NotePicker({
                     : "text-[#3c546b]",
               )}
             >
+              {finger && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute left-1/2 top-[35%] z-[2] grid h-[13px] w-[13px] -translate-x-1/2 place-items-center rounded-full border border-cyan-400/40 bg-[#0a2238]/95 text-[7px] font-bold tabular-nums text-cyan-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.2),0_2px_5px_rgba(2,6,12,0.5)]"
+                >
+                  {finger}
+                </span>
+              )}
               <span className="absolute inset-x-0 bottom-2">{LETTERS[pc]}</span>
             </button>
           );

@@ -6,6 +6,13 @@ import { cn } from "@/lib/utils";
 
 const WHITE_PCS = [0, 2, 4, 5, 7, 9, 11];
 
+/** Canonical 1-3-5 mold: Do mayor (Do · Mi · Sol). */
+const FINGER_BY_PC: Record<number, 1 | 3 | 5> = {
+  0: 1,
+  4: 3,
+  7: 5,
+};
+
 type Key = {
   midi: number;
   pc: number;
@@ -52,6 +59,7 @@ export function PianoKeyboard({
   onRelease,
   immersive = false,
   disabled = false,
+  fingering = false,
 }: {
   startMidi?: number;
   octaves?: 1 | 1.5 | 2;
@@ -61,6 +69,7 @@ export function PianoKeyboard({
   onRelease: (midi: number, source: string) => void;
   immersive?: boolean;
   disabled?: boolean;
+  fingering?: boolean;
 }) {
   const pointersRef = useRef(new Map<number, number>());
   const pressRef = useRef(onPress);
@@ -70,6 +79,21 @@ export function PianoKeyboard({
 
   const { white, black } = buildKeys(startMidi, octaves);
   const whiteCount = white.length;
+
+  // Contiguous black keys form the classic "houses": a group of two (left of
+  // Do) and a group of three (left of Fa). They get a subtle neumorphic tint.
+  const blackGroups = black.reduce<
+    Array<Array<{ midi: number; pc: number; after: number }>>
+  >((groups, key) => {
+    const current = groups[groups.length - 1];
+    const previous = current?.[current.length - 1];
+    if (previous && key.midi - previous.midi === 2) current.push(key);
+    else groups.push([key]);
+    return groups;
+  }, []);
+
+  const blackCenter = (after: number) => ((after + 1) / whiteCount) * 100;
+  const blackWidth = (0.64 / whiteCount) * 100;
 
   const velocityAt = (clientY: number, midi: number) => {
     const element = document.querySelector(
@@ -176,9 +200,35 @@ export function PianoKeyboard({
       onPointerMove={move}
       onContextMenu={(event) => event.preventDefault()}
     >
+      {fingering &&
+        blackGroups.map((group) => {
+          const first = group[0];
+          const last = group[group.length - 1];
+          const centerFirst = blackCenter(first.after);
+          const centerLast = blackCenter(last.after);
+          const padding = blackWidth * 0.42;
+          const left = centerFirst - blackWidth / 2 - padding;
+          const width = centerLast - centerFirst + blackWidth + padding * 2;
+          const pair = group.length === 2;
+          return (
+            <span
+              key={`house-${first.midi}`}
+              aria-hidden
+              className={cn(
+                "pointer-events-none absolute top-0 z-[1] h-[62%] rounded-b-[8px] border-x border-b shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]",
+                pair
+                  ? "border-cyan-300/15 bg-[linear-gradient(180deg,rgba(56,189,248,0.22),rgba(56,189,248,0.05)_58%,transparent)]"
+                  : "border-[#9DB5FF]/15 bg-[linear-gradient(180deg,rgba(157,181,255,0.22),rgba(90,120,230,0.05)_58%,transparent)]",
+              )}
+              style={{ left: `${left}%`, width: `${width}%` }}
+            />
+          );
+        })}
+
       {white.map((key) => {
         const active = activeMidis.has(key.midi);
         const label = keyLabel(key.midi, key.pc);
+        const finger = fingering ? FINGER_BY_PC[key.pc] : undefined;
         return (
           <button
             key={key.midi}
@@ -192,6 +242,20 @@ export function PianoKeyboard({
             onPointerDown={(event) => begin(event, key.midi)}
             onContextMenu={(event) => event.preventDefault()}
           >
+            {finger && (
+              <span
+                aria-hidden
+                className={cn(
+                  "pointer-events-none absolute left-1/2 top-[35%] z-[2] grid -translate-x-1/2 place-items-center rounded-full border border-cyan-300/40 bg-[#0a2238]/95 font-bold tabular-nums text-cyan-100",
+                  "shadow-[inset_0_1px_0_rgba(255,255,255,0.2),0_2px_5px_rgba(2,6,12,0.55),0_0_12px_rgba(56,189,248,0.18)]",
+                  immersive
+                    ? "h-4 w-4 text-[8px]"
+                    : "h-[13px] w-[13px] text-[7px]",
+                )}
+              >
+                {finger}
+              </span>
+            )}
             {label && (
               <span
                 className={cn(

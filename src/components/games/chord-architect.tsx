@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import {
   AudioLines,
+  Hand,
   Lightbulb,
   Play,
   Sparkles,
@@ -109,6 +110,7 @@ export function ChordArchitect({
   const [isCorrect, setIsCorrect] = useState(false);
   const [result, setResult] = useState<GameResult | null>(null);
   const [showHint, setShowHint] = useState(false);
+  const [fingering, setFingering] = useState(false);
   const [doneSlots, setDoneSlots] = useState<number[]>([]);
 
   const counter = useRef(0);
@@ -518,10 +520,32 @@ export function ChordArchitect({
                   </div>
                 )}
 
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <span className="text-[7px] font-semibold uppercase tracking-[0.15em] text-faint">
+                    Digitación
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setFingering((value) => !value)}
+                    aria-pressed={fingering}
+                    aria-label="Modo Molde / Digitación"
+                    className={cn(
+                      "flex items-center gap-1 rounded-full border px-2.5 py-1 text-[7px] font-semibold uppercase tracking-[0.1em] transition-colors",
+                      fingering
+                        ? "border-cyan-300/30 bg-cyan-300/[0.07] text-glow"
+                        : "border-white/[0.06] bg-black/20 text-faint hover:text-muted",
+                    )}
+                  >
+                    <Hand size={10} />
+                    Modo Molde 1·3·5
+                  </button>
+                </div>
+
                 <NotePicker
                   selected={selected}
                   onToggle={togglePc}
                   disabled={phase === "feedback"}
+                  fingering={fingering}
                   reveal={
                     phase === "feedback" && !isCorrect
                       ? challenge.targetPcs

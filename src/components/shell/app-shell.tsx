@@ -5,7 +5,9 @@ import { useAcademy } from "@/components/providers/academy-provider";
 import { BottomNav } from "@/components/shell/bottom-nav";
 import { Header } from "@/components/shell/header";
 import { NeoToast } from "@/components/shell/neo-toast";
+import { StudentTour } from "@/components/shell/student-tour";
 import { StudentWelcome } from "@/components/shell/student-welcome";
+import { AudioGuard } from "@/components/system/audio-guard";
 
 function Atmosphere() {
   return (
@@ -33,6 +35,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (gated) {
     return (
       <div className="relative min-h-dvh overflow-x-clip">
+        <AudioGuard />
         <Atmosphere />
         <main
           id="contenido"
@@ -55,6 +58,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <Atmosphere />
 
+      <AudioGuard />
+
       <Header />
 
       <main
@@ -66,6 +71,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <BottomNav />
       <NeoToast />
+      <StudentTour />
 
       {offlineMode && (
         <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] h-[2px] bg-[linear-gradient(90deg,transparent,rgba(242,180,92,0.55),transparent)]" aria-hidden />

@@ -1,16 +1,17 @@
 "use client";
 
 import {
+  Hand,
   Maximize2,
   Minus,
   Plus,
-  Save,
   Sparkles,
   SlidersHorizontal,
   Volume2,
   Waves,
   X,
 } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAcademy } from "@/components/providers/academy-provider";
@@ -131,7 +132,10 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
   const [lastHarmony, setLastHarmony] = useState<HarmonyAnalysis | null>(null);
   const [seconds, setSeconds] = useState(0);
   const [started, setStarted] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [fingering, setFingering] = useState(false);
+  const [toast, setToast] = useState<{ id: number; minutes: number } | null>(
+    null,
+  );
   const [skill, setSkill] = useState<Skill>(
     level.focus === "melody" || level.focus === "rhythm"
       ? level.focus
@@ -144,9 +148,21 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
   const [prefsReady, setPrefsReady] = useState(false);
 
   const padTimerRef = useRef<number | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const holdersRef = useRef<Map<number, Set<string>>>(new Map());
+  const activeSecondsRef = useRef(0);
+  const creditedRef = useRef(0);
+  const lastActivityRef = useRef(0);
   const audioRef = useRef(audio);
   audioRef.current = audio;
+  const logPracticeRef = useRef(logPractice);
+  logPracticeRef.current = logPractice;
+  const skillRef = useRef(skill);
+  skillRef.current = skill;
+  const levelRef = useRef(level);
+  levelRef.current = level;
+  const canLogRef = useRef(Boolean(activeStudent));
+  canLogRef.current = Boolean(activeStudent);
 
   const midi = useMidiInput(
     {
@@ -185,12 +201,49 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
   }, [lastHarmony?.label, reportLiveActivity, started]);
 
   useEffect(() => {
-    if (!started) return;
     const timer = window.setInterval(() => {
-      setSeconds((value) => Math.min(3599, value + 1));
+      const now = Date.now();
+      const active =
+        lastActivityRef.current > 0 && now - lastActivityRef.current < 15_000;
+      setStarted(active);
+      if (!active) return;
+
+      // Ten hours is a generous ceiling: the counter never blocks crediting.
+      activeSecondsRef.current = Math.min(35_999, activeSecondsRef.current + 1);
+      setSeconds(activeSecondsRef.current);
+
+      if (!canLogRef.current) return;
+      const creditedSeconds = creditedRef.current * 60;
+      if (activeSecondsRef.current - creditedSeconds < 60) return;
+
+      creditedRef.current += 1;
+      const levelId = levelRef.current.id;
+      const currentSkill = skillRef.current;
+      void logPracticeRef
+        .current({
+          levelId,
+          minutes: 1,
+          skill: currentSkill,
+          score: 74,
+          quiet: true,
+        })
+        .then(() => {
+          setToast({ id: Date.now(), minutes: 1 });
+          if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+          toastTimerRef.current = window.setTimeout(
+            () => setToast(null),
+            2800,
+          );
+        });
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [started]);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -214,6 +267,7 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
       ) {
         setNaming(savedNaming);
       }
+      setFingering(localStorage.getItem("leo.keyboardFingering") === "true");
     } catch {
       /* Private mode. */
     }
@@ -225,10 +279,11 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
     try {
       localStorage.setItem("leo.keyboardView", view);
       localStorage.setItem("leo.keyboardNaming", naming);
+      localStorage.setItem("leo.keyboardFingering", String(fingering));
     } catch {
       /* Private mode. */
     }
-  }, [prefsReady, view, naming]);
+  }, [fingering, prefsReady, view, naming]);
 
   useEffect(() => setMounted(true), []);
 
@@ -260,6 +315,7 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
 
   const press = useCallback(
     (midiNote: number, velocity: number, source: string) => {
+      lastActivityRef.current = Date.now();
       const holders = holdersRef.current;
       let sources = holders.get(midiNote);
       if (!sources) {
@@ -417,6 +473,7 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
   }, [active, octave, press, release]);
 
   const playPad = (pad: (typeof CHORD_PADS)[number]) => {
+    lastActivityRef.current = Date.now();
     if (padTimerRef.current) window.clearTimeout(padTimerRef.current);
     const notes = chordMidis(pad.root, [...pad.intervals], octave);
     audio.playChord(notes, 2, 0.76);
@@ -427,21 +484,6 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
       setPadMidis([]);
       setPlayingPad(null);
     }, 1900);
-  };
-
-  const saveSession = async () => {
-    if (saving) return;
-    setSaving(true);
-    const minutes = Math.max(1, Math.ceil(seconds / 60));
-    await logPractice({
-      levelId: level.id,
-      minutes,
-      skill,
-      score: Math.round(72 + Math.min(20, minutes * 2)),
-    });
-    setSeconds(0);
-    setStarted(false);
-    setSaving(false);
   };
 
   const octaves: 1 | 1.5 | 2 =
@@ -470,6 +512,26 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
 
   return (
     <div className="space-y-4">
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            key={toast.id}
+            initial={{ opacity: 0, y: -12, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -8, scale: 0.98 }}
+            transition={{ type: "spring", stiffness: 430, damping: 32 }}
+            className="pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top,0px)+8.55rem)] z-[46] flex justify-center px-4"
+            role="status"
+            aria-live="polite"
+          >
+            <span className="neu-card flex items-center gap-2 rounded-full border border-cyan-300/20 px-4 py-2 text-[10.5px] font-semibold text-ivory/90 shadow-[0_0_24px_rgba(56,189,248,0.12)]">
+              <span aria-hidden>🎹</span>
+              +{toast.minutes} min de práctica registrado
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <StaffVisor
         activeMidis={displayMidis}
         ghostMidis={ghostMidis}
@@ -641,6 +703,7 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
             activeMidis={activeMidis}
             onPress={press}
             onRelease={release}
+            fingering={fingering}
           />
         </div>
 
@@ -680,6 +743,21 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
           >
             <Waves size={12} />
             Pedal
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setFingering((value) => !value)}
+            aria-pressed={fingering}
+            aria-label="Modo Molde / Digitación"
+            title="Modo Molde / Digitación · 1-3-5"
+            className={cn(
+              "neu-button h-9 min-h-0 rounded-[12px] px-2.5 text-[8px]",
+              fingering && "border-cyan-300/30 text-glow",
+            )}
+          >
+            <Hand size={12} />
+            Molde
           </button>
 
           <div className="ml-auto flex items-center gap-0.5 rounded-[11px] border border-white/[0.05] bg-black/20 p-0.5">
@@ -801,6 +879,20 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
 
                 <button
                   type="button"
+                  onClick={() => setFingering((value) => !value)}
+                  aria-pressed={fingering}
+                  aria-label="Modo Molde / Digitación"
+                  className={cn(
+                    "flex items-center gap-1 rounded-full border border-white/[0.06] bg-black/30 px-2.5 py-1 text-[8px] font-semibold uppercase tracking-[0.06em] transition-colors",
+                    fingering ? "text-glow" : "text-faint hover:text-muted",
+                  )}
+                >
+                  <Hand size={10} />
+                  Molde
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => exitImmersive()}
                   className="ml-auto flex flex-none items-center gap-1.5 rounded-full border border-white/[0.1] bg-white/[0.05] px-3 py-1.5 text-[8.5px] font-semibold text-ivory transition-colors hover:bg-white/[0.09]"
                 >
@@ -822,6 +914,7 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
                       onPress={press}
                       onRelease={release}
                       immersive
+                      fingering={fingering}
                     />
                   </div>
                 </div>
@@ -891,36 +984,53 @@ export function KeyboardStudio({ active = true }: { active?: boolean }) {
 
       <section
         className="neu-card overflow-hidden rounded-[22px]"
-        aria-label="Guardar sesión de estudio"
+        aria-label="Práctica automática"
       >
         <div className="flex items-center gap-3 p-4">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className="text-[7px] font-semibold uppercase tracking-[0.18em] text-faint">
-                Sesión de estudio
+                Práctica automática
               </span>
-              {started && (
-                <span className="h-1 w-1 animate-dot-pulse rounded-full bg-glow" />
-              )}
+              <span
+                className={cn(
+                  "h-1 w-1 rounded-full transition-colors",
+                  started ? "animate-dot-pulse bg-glow" : "bg-white/20",
+                )}
+              />
+              <span className="text-[6px] font-semibold uppercase tracking-[0.12em] text-faint/60">
+                {started ? "detectando teclas" : "en pausa"}
+              </span>
             </div>
             <div className="mt-1.5 flex items-baseline gap-2">
               <span className="font-display text-[26px] leading-none tabular-nums text-ivory">
                 {formatTimer(seconds)}
               </span>
               <span className="text-[7.5px] font-semibold uppercase tracking-[0.12em] text-faint">
-                {started ? "en curso" : seconds > 0 ? "pausada" : "lista"}
+                {Math.floor(seconds / 60) > 0
+                  ? `${Math.floor(seconds / 60)} min guardados`
+                  : "activo"}
               </span>
             </div>
+            <p className="mt-1.5 text-[7px] leading-relaxed text-faint/80">
+              Cada minuto tocado se registra solo. Se pausa tras 15 s sin
+              tocar.
+            </p>
           </div>
-          <button
-            type="button"
-            onClick={() => void saveSession()}
-            disabled={saving || (seconds === 0 && !started)}
-            className="neu-button neu-button--primary h-10 min-h-0 rounded-[13px] px-3.5 text-[10px]"
-          >
-            <Save size={13} />
-            {saving ? "Guardando…" : `Guardar ${Math.max(1, Math.ceil(seconds / 60))} min`}
-          </button>
+          <div className="w-[74px] flex-none text-right">
+            <p className="text-[6px] font-semibold uppercase tracking-[0.12em] text-faint">
+              Próximo minuto
+            </p>
+            <p className="mt-0.5 font-display text-[16px] leading-none tabular-nums text-glow">
+              {60 - (seconds % 60)}s
+            </p>
+            <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-black/45">
+              <div
+                className="h-full rounded-full bg-glow/70 transition-[width] duration-500"
+                style={{ width: `${((seconds % 60) / 60) * 100}%` }}
+              />
+            </div>
+          </div>
         </div>
         <div className="border-t border-white/[0.055] px-4 py-3">
           <div className="flex items-center justify-between">
