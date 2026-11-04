@@ -26,7 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InlineNotice } from "@/components/shell/neo-toast";
 import { BackupPanel } from "@/components/teacher/backup-panel";
 import { LiveClassroom } from "@/components/teacher/live-classroom";
@@ -43,6 +43,13 @@ import {
   type Student,
   type TeacherDashboardData,
 } from "@/lib/academy";
+import {
+  completeStudentCreation,
+  newLocalStudentCode,
+  queueStudentCreation,
+  readPendingStudentCreations,
+  type PendingStudentCreation,
+} from "@/lib/local-db";
 import { clamp, formatMinutes, formatShortDate } from "@/lib/utils";
 import {
   addStudentAction,
@@ -56,7 +63,42 @@ import {
 } from "@/server/actions/teacher";
 import { cn } from "@/lib/utils";
 
-type Notice = { tone: "success" | "error"; message: string } | null;
+type Notice = {
+  tone: "success" | "error" | "warning";
+  message: string;
+} | null;
+
+/** Local-only id so a pending student can render before SQLite confirms it. */
+function pendingStudentId(clientId: string) {
+  return `stu_local_${clientId.replace(/[^a-z0-9]/gi, "").slice(0, 16)}`;
+}
+
+function pendingToStudent(entry: PendingStudentCreation): Student {
+  const parts = entry.name.trim().split(/\s+/).filter(Boolean);
+  const firstName = parts[0] ?? entry.name;
+  const initials =
+    parts
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "AL";
+  return {
+    id: pendingStudentId(entry.clientId),
+    name: entry.name,
+    firstName,
+    initials,
+    avatarTone: "cyan",
+    currentLevel: entry.level,
+    age: entry.age,
+    teacherNotes: entry.notes || null,
+    streakDays: 0,
+    totalMinutes: 0,
+    accuracy: 0,
+    weeklyMinutes: 0,
+    weeklyGoalMinutes: entry.weeklyGoalMinutes,
+    joinedAt: entry.createdAt.slice(0, 10),
+    updatedAt: entry.createdAt,
+  };
+}
 
 const AVATAR_TONE: Record<string, string> = {
   sapphire: "bg-[linear-gradient(145deg,#1a63c7,#0a2f63)] text-[#dbeeff]",
@@ -349,6 +391,11 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
   });
   const [adding, setAdding] = useState(false);
   const [addResult, setAddResult] = useState<Notice>(null);
+  const [pendingStudents, setPendingStudents] = useState<
+    PendingStudentCreation[]
+  >([]);
+  const [retryingStudents, setRetryingStudents] = useState(false);
+  const attemptedSync = useRef(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -389,9 +436,126 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
     );
   }, []);
 
+  /**
+   * Replays one Dexie-outbox row against the Server Action. The client id makes
+   * the call idempotent, so a retry after a timeout returns the same student.
+   */
+  const syncPendingStudent = useCallback(
+    async (entry: PendingStudentCreation) => {
+      try {
+        const response = await addStudentAction({
+          name: entry.name,
+          age: entry.age,
+          level: entry.level,
+          weeklyGoalMinutes: entry.weeklyGoalMinutes,
+          notes: entry.notes,
+          clientId: entry.clientId,
+          preferredCode: entry.code,
+        });
+
+        if (response.ok) {
+          await completeStudentCreation(entry.clientId);
+          setPendingStudents((current) =>
+            current.filter((item) => item.clientId !== entry.clientId),
+          );
+          setAddResult({
+            tone: "success",
+            message: `Alumno creado con éxito · código ${response.data.code}. Guardado en SQLite.`,
+          });
+          router.refresh();
+          return true;
+        }
+
+        setAddResult((current) =>
+          current?.tone === "error"
+            ? current
+            : {
+                tone: "warning",
+                message:
+                  `Alumno creado con éxito · código ${entry.code}. ` +
+                  "Guardado en este dispositivo; SQLite aún no responde, pero se reintentará al recargar o al pulsar Reintentar.",
+              },
+        );
+        return false;
+      } catch {
+        setAddResult((current) =>
+          current?.tone === "error"
+            ? current
+            : {
+                tone: "warning",
+                message:
+                  `Alumno creado con éxito · código ${entry.code}. ` +
+                  "Guardado en este dispositivo; la sincronización falló por red, pero nada se ha perdido.",
+              },
+        );
+        return false;
+      }
+    },
+    [router],
+  );
+
+  const flushPendingStudents = useCallback(
+    async (entries: PendingStudentCreation[]) => {
+      if (!entries.length) return;
+      setRetryingStudents(true);
+      for (const entry of entries) {
+        const ok = await syncPendingStudent(entry);
+        if (!ok) break;
+      }
+      setRetryingStudents(false);
+    },
+    [syncPendingStudent],
+  );
+
+  // Restore students created while SQLite was down (Dexie outbox).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pending = await readPendingStudentCreations();
+        if (!cancelled) setPendingStudents(pending);
+      } catch {
+        // IndexedDB disabled: the form surfaces an explicit error if it cannot
+        // persist the student locally.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // One automatic retry per mount, and only when the server is reachable.
+  useEffect(() => {
+    if (attemptedSync.current || !pendingStudents.length) return;
+    if (data.source !== "sqlite") return;
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    attemptedSync.current = true;
+    void flushPendingStudents(pendingStudents);
+  }, [data.source, flushPendingStudents, pendingStudents]);
+
   const selectedStudent = useMemo(
     () => data.students.find((student) => student.id === studentId),
     [data.students, studentId],
+  );
+
+  const pendingById = useMemo(
+    () =>
+      new Map(
+        pendingStudents.map((entry) => [
+          pendingStudentId(entry.clientId),
+          entry,
+        ]),
+      ),
+    [pendingStudents],
+  );
+
+  /** SQLite students first, then local-only students still waiting to sync. */
+  const visibleStudents = useMemo(
+    () => [
+      ...data.students,
+      ...pendingStudents.map(pendingToStudent),
+    ],
+    [data.students, pendingStudents],
   );
 
   const syncScoresToStudent = (id: string) => {
@@ -457,16 +621,50 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
   const submitStudent = async (event: React.FormEvent) => {
     event.preventDefault();
     if (adding) return;
+
+    // Validate here (the form is `noValidate`) so a native bubble can never
+    // swallow the submit and the reason is always visible in red.
+    const name = newStudent.name.trim();
+    if (name.length < 2) {
+      setAddResult({
+        tone: "error",
+        message: "Escribe el nombre completo del alumno (mínimo 2 caracteres).",
+      });
+      return;
+    }
+    const age = draftAge(newStudent.age);
+    if (age != null && (age < 3 || age > 99)) {
+      setAddResult({
+        tone: "error",
+        message: "La edad debe estar entre 3 y 99 años.",
+      });
+      return;
+    }
+    const weeklyGoalMinutes = clamp(
+      Math.round(newStudent.weeklyGoalMinutes || 90),
+      30,
+      600,
+    );
+
     setAdding(true);
     setAddResult(null);
-    const response = await addStudentAction({
-      name: newStudent.name,
-      age: draftAge(newStudent.age),
+
+    const entry: PendingStudentCreation = {
+      queueId: -1,
+      clientId: crypto.randomUUID(),
+      code: newLocalStudentCode(),
+      name,
+      age,
       level: newStudent.level,
-      weeklyGoalMinutes: newStudent.weeklyGoalMinutes,
-      notes: newStudent.notes,
-    });
-    if (response.ok) {
+      weeklyGoalMinutes,
+      notes: newStudent.notes.trim(),
+      createdAt: new Date().toISOString(),
+    };
+
+    // 1) Dexie first: the teacher gets the code instantly and nothing freezes.
+    try {
+      const stored = await queueStudentCreation(entry);
+      setPendingStudents((current) => [stored, ...current]);
       setNewStudent({
         name: "",
         age: "",
@@ -477,13 +675,22 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
       setShowAdd(false);
       setAddResult({
         tone: "success",
-        message: `Alumno añadido al sendero · código ${response.data.code}.`,
+        message: `Alumno creado con éxito · código ${entry.code}. Guardado en este dispositivo; sincronizando con SQLite…`,
       });
-      router.refresh();
-    } else {
-      setAddResult({ tone: "error", message: response.error });
+    } catch {
+      setAddResult({
+        tone: "error",
+        message:
+          "No se pudo guardar el alumno en este dispositivo. Revisa el almacenamiento del navegador e inténtalo de nuevo.",
+      });
+      setAdding(false);
+      return;
     }
     setAdding(false);
+
+    // 2) Server in the background: on success the provisional row is replaced
+    // by the authoritative one; on failure it stays queued for a retry.
+    void syncPendingStudent(entry);
   };
 
   const openProfile = (student: Student) => {
@@ -667,9 +874,9 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
 
       {data.source === "unavailable" && (
         <InlineNotice tone="warning">
-          SQLite no responde en este entorno. La mesa muestra datos de
-          demostración y las acciones están desactivadas hasta recuperar la base
-          de datos.
+          SQLite no responde ahora mismo. La evaluación queda en pausa, pero
+          puedes seguir añadiendo alumnos: se guardan al instante en este
+          dispositivo y se sincronizan solos cuando vuelva la base de datos.
         </InlineNotice>
       )}
 
@@ -679,7 +886,7 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
       >
         <div className="grid grid-cols-3 divide-x divide-white/[0.055]">
           {[
-            { icon: Users, label: "Alumnos", value: data.students.length },
+            { icon: Users, label: "Alumnos", value: visibleStudents.length },
             {
               icon: Award,
               label: "Evaluaciones",
@@ -915,10 +1122,12 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
                 setShowAdd((value) => !value);
                 setAddResult(null);
               }}
-              className="flex items-center gap-1 text-[8px] font-semibold uppercase tracking-[0.12em] text-glow/85"
+              aria-expanded={showAdd}
+              aria-controls="nuevo-alumno"
+              className="relative z-10 flex items-center gap-1 rounded-md px-1 py-0.5 text-[8px] font-semibold uppercase tracking-[0.12em] text-glow/85 transition-colors hover:bg-white/[0.05]"
             >
               <UserPlus size={10} />
-              Añadir
+              {showAdd ? "Cerrar" : "Añadir"}
             </button>
           }
         />
@@ -926,13 +1135,15 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
         <AnimatePresence>
           {showAdd && (
             <motion.form
+              id="nuevo-alumno"
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
               exit={{ opacity: 0, height: 0 }}
               onSubmit={submitStudent}
-              className="mt-3 overflow-hidden"
+              noValidate
+              className="pointer-events-auto relative z-50 mt-3 overflow-visible"
             >
-              <div className="neu-card space-y-3 rounded-[20px] p-4">
+              <div className="neu-card pointer-events-auto space-y-3 rounded-[20px] p-4">
                 <div className="flex items-center justify-between">
                   <span className="eyebrow text-[7px]">Nuevo alumno</span>
                   <button
@@ -1033,34 +1244,90 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
                   />
                 </Field>
 
-                {addResult && (
-                  <p
-                    className={cn(
-                      "text-[8.5px]",
-                      addResult.tone === "success"
-                        ? "text-glow/90"
-                        : "text-ember/90",
-                    )}
-                  >
-                    {addResult.message}
-                  </p>
-                )}
-
                 <button
                   type="submit"
-                  disabled={adding || disabled}
+                  disabled={adding}
                   className="neu-button w-full rounded-[12px] py-2.5 text-[9.5px] disabled:opacity-50"
                 >
-                  <Plus size={12} />
-                  {adding ? "Añadiendo…" : "Añadir al sendero"}
+                  {adding ? (
+                    <RefreshCw size={12} className="animate-spin" />
+                  ) : (
+                    <Plus size={12} />
+                  )}
+                  {adding ? "Cargando…" : "Añadir al sendero"}
                 </button>
               </div>
             </motion.form>
           )}
         </AnimatePresence>
 
+        {addResult && (
+          <div
+            role={addResult.tone === "error" ? "alert" : "status"}
+            aria-live="polite"
+            className={cn(
+              "mt-3 flex items-center justify-between gap-2 rounded-[12px] border px-3 py-2.5 text-[9px] leading-[1.5]",
+              addResult.tone === "success" &&
+                "border-cyan-300/25 bg-cyan-300/[0.06] text-glow",
+              addResult.tone === "error" &&
+                "border-red-400/35 bg-red-500/10 text-red-300",
+              addResult.tone === "warning" &&
+                "border-amber-300/25 bg-amber-300/[0.06] text-amber-200",
+            )}
+          >
+            <span>{addResult.message}</span>
+            {pendingStudents.length > 0 && addResult.tone !== "error" && (
+              <button
+                type="button"
+                onClick={() => void flushPendingStudents(pendingStudents)}
+                disabled={retryingStudents}
+                className="flex flex-none items-center gap-1 rounded-md border border-white/20 px-1.5 py-1 text-[7px] font-semibold uppercase tracking-[0.1em] disabled:opacity-50"
+              >
+                <RefreshCw
+                  size={8}
+                  className={retryingStudents ? "animate-spin" : undefined}
+                />
+                {retryingStudents ? "Reintentando…" : "Reintentar"}
+              </button>
+            )}
+          </div>
+        )}
+
+        {!addResult && pendingStudents.length > 0 && (
+          <div
+            role="status"
+            className="mt-3 flex items-center justify-between gap-2 rounded-[12px] border border-amber-300/25 bg-amber-300/[0.06] px-3 py-2.5 text-[9px] leading-[1.5] text-amber-200"
+          >
+            <span>
+              {pendingStudents.length === 1
+                ? "1 alumno guardado solo en este dispositivo."
+                : `${pendingStudents.length} alumnos guardados solo en este dispositivo.`}{" "}
+              Se sincronizarán con SQLite al recuperar la conexión.
+            </span>
+            <button
+              type="button"
+              onClick={() => void flushPendingStudents(pendingStudents)}
+              disabled={retryingStudents}
+              className="flex flex-none items-center gap-1 rounded-md border border-white/20 px-1.5 py-1 text-[7px] font-semibold uppercase tracking-[0.1em] disabled:opacity-50"
+            >
+              <RefreshCw
+                size={8}
+                className={retryingStudents ? "animate-spin" : undefined}
+              />
+              {retryingStudents ? "Reintentando…" : "Reintentar"}
+            </button>
+          </div>
+        )}
+
+        {visibleStudents.length === 0 && (
+          <p className="mt-3 rounded-[12px] border border-white/[0.06] bg-white/[0.02] px-3 py-3 text-[9px] text-faint">
+            Todavía no hay alumnos. Pulsa «Añadir» para registrar el primero.
+          </p>
+        )}
+
         <div className="mt-3 space-y-2.5">
-          {data.students.map((student) => {
+          {visibleStudents.map((student) => {
+            const pending = pendingById.get(student.id);
             const radar = data.radar[student.id] ?? {
               melody: 0,
               harmony: 0,
@@ -1098,8 +1365,16 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
                       </span>
                       <span className="inline-flex items-center gap-1 rounded-full border border-cyan-300/15 bg-cyan-300/[0.05] px-1.5 py-0.5 text-[6.5px] font-semibold tracking-[0.1em] text-glow/85">
                         <KeyRound size={7} />
-                        {data.studentCodes[student.id] ?? "—"}
+                        {pending
+                          ? pending.code
+                          : (data.studentCodes[student.id] ?? "—")}
                       </span>
+                      {pending && (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/[0.06] px-1.5 py-0.5 text-[6px] font-semibold uppercase tracking-[0.1em] text-amber-200/90">
+                          <RefreshCw size={7} className="animate-spin" />
+                          Sin sincronizar
+                        </span>
+                      )}
                     </p>
                     <div className="mt-1.5 flex items-center gap-1">
                       {LEVELS.map((level) => (
@@ -1123,17 +1398,20 @@ export function TeacherDashboard({ data }: { data: TeacherDashboardData }) {
                       onClick={() =>
                         open ? setEditingId(null) : openProfile(student)
                       }
+                      disabled={Boolean(pending)}
                       aria-expanded={open}
                       className={cn(
-                        "grid h-7 w-7 place-items-center rounded-[9px] border text-[9px] transition-colors",
+                        "grid h-7 w-7 place-items-center rounded-[9px] border text-[9px] transition-colors disabled:opacity-40",
                         open
                           ? "border-cyan-300/25 bg-cyan-300/10 text-glow"
                           : "border-white/[0.07] bg-white/[0.02] text-faint hover:text-ivory",
                       )}
                       aria-label={
-                        open
-                          ? `Cerrar perfil de ${student.name}`
-                          : `Editar perfil de ${student.name}`
+                        pending
+                          ? `El perfil de ${student.name} se podrá editar al sincronizar`
+                          : open
+                            ? `Cerrar perfil de ${student.name}`
+                            : `Editar perfil de ${student.name}`
                       }
                     >
                       <NotebookPen size={12} />

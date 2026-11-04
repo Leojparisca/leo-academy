@@ -1,6 +1,6 @@
 "use server";
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
@@ -32,6 +32,7 @@ import {
   lessonProgress,
   levels,
   skillScores,
+  studentAccessCodes,
   students,
   teacherEvaluations,
   unlockedLevels,
@@ -255,6 +256,15 @@ const newStudentSchema = z.object({
   level: z.number().int().min(1).max(8),
   weeklyGoalMinutes: z.number().int().min(30).max(600),
   notes: z.string().trim().max(800).optional(),
+  /** Browser-generated idempotency key: retries must not create duplicates. */
+  clientId: z.string().trim().min(8).max(80).optional(),
+  /** Code shown to the teacher immediately after the Dexie write. */
+  preferredCode: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z0-9]{4,8}$/)
+    .optional(),
 });
 
 const updateStudentSchema = z.object({
@@ -288,26 +298,78 @@ export async function addStudentAction(
 
   try {
     const db = await getReadyDb();
-    const id = `stu_${randomUUID().slice(0, 8)}`;
     const name = parsed.data.name;
-    const now = new Date().toISOString();
-    const code = newStudentCode(await readTakenCodes(db));
 
-    await db.transaction(async (tx) => {
-      await createStudentWithCode(
-        tx,
-        {
-          id,
-          name,
-          level: parsed.data.level,
-          age: parsed.data.age ?? null,
-          weeklyGoalMinutes: parsed.data.weeklyGoalMinutes,
-          notes: parsed.data.notes ?? null,
-          code,
-        },
-        now,
-      );
-    });
+    // A stable client id makes the Server Action replay-safe: if the response
+    // was lost after the row was committed, retrying returns the same student
+    // and the same code instead of creating a duplicate.
+    const id = parsed.data.clientId
+      ? `stu_${createHash("sha1")
+          .update(parsed.data.clientId)
+          .digest("hex")
+          .slice(0, 10)}`
+      : `stu_${randomUUID().slice(0, 8)}`;
+
+    const existing = await db
+      .select({ id: students.id, code: studentAccessCodes.code })
+      .from(students)
+      .innerJoin(
+        studentAccessCodes,
+        eq(students.id, studentAccessCodes.studentId),
+      )
+      .where(eq(students.id, id))
+      .limit(1);
+
+    if (existing[0]) {
+      revalidatePath("/profesor");
+      revalidatePath("/mapa");
+      return {
+        ok: true,
+        data: { studentId: existing[0].id, code: existing[0].code },
+      };
+    }
+
+    const now = new Date().toISOString();
+    const taken = await readTakenCodes(db);
+    const preferred = parsed.data.preferredCode;
+    const code =
+      preferred && !taken.has(preferred) ? preferred : newStudentCode(taken);
+
+    try {
+      await db.transaction(async (tx) => {
+        await createStudentWithCode(
+          tx,
+          {
+            id,
+            name,
+            level: parsed.data.level,
+            age: parsed.data.age ?? null,
+            weeklyGoalMinutes: parsed.data.weeklyGoalMinutes,
+            notes: parsed.data.notes ?? null,
+            code,
+          },
+          now,
+        );
+      });
+    } catch (error) {
+      // Concurrent retry: another request may have inserted the same client id.
+      const raced = await db
+        .select({ id: students.id, code: studentAccessCodes.code })
+        .from(students)
+        .innerJoin(
+          studentAccessCodes,
+          eq(students.id, studentAccessCodes.studentId),
+        )
+        .where(eq(students.id, id))
+        .limit(1);
+      if (!raced[0]) throw error;
+      revalidatePath("/profesor");
+      revalidatePath("/mapa");
+      return {
+        ok: true,
+        data: { studentId: raced[0].id, code: raced[0].code },
+      };
+    }
 
     revalidatePath("/profesor");
     revalidatePath("/mapa");
@@ -316,7 +378,8 @@ export async function addStudentAction(
     console.error("[leo] Error al crear alumno", error);
     return {
       ok: false,
-      error: "No se pudo crear el alumno.",
+      error:
+        "No se pudo guardar en SQLite. El alumno sigue a salvo en este dispositivo y se reintentará la sincronización.",
       code: "DB_ERROR",
     };
   }

@@ -42,7 +42,7 @@ export type LocalSkillScore = {
   synced: 0 | 1;
 };
 
-export type OfflineMutationKind = "practice" | "evaluation";
+export type OfflineMutationKind = "practice" | "evaluation" | "student";
 
 export type OfflineMutation = {
   id?: number;
@@ -85,6 +85,25 @@ export type PracticePayload = {
   score: number;
   createdAt: string;
 };
+
+/**
+ * A student the teacher created while SQLite was unreachable. It lives in the
+ * Dexie outbox —the teacher sees the provisional code immediately— and the
+ * dashboard replays it against `addStudentAction` until the server confirms.
+ */
+export type PendingStudentCreation = {
+  queueId: number;
+  clientId: string;
+  code: string;
+  name: string;
+  age: number | null;
+  level: number;
+  weeklyGoalMinutes: number;
+  notes: string;
+  createdAt: string;
+};
+
+type StudentCreationPayload = Omit<PendingStudentCreation, "queueId">;
 
 class AcademyLocalDatabase extends Dexie {
   students!: EntityTable<Student, "id">;
@@ -191,7 +210,108 @@ export async function queueMutation(
 }
 
 export async function pendingMutationCount() {
-  return getLocalDb().offlineQueue.where("status").equals("pending").count();
+  // Student-creation rows are teacher-only and are replayed by the dashboard;
+  // they must not hold back the student's practice/backup merge.
+  return getLocalDb()
+    .offlineQueue.where("status")
+    .equals("pending")
+    .and((entry) => entry.kind !== "student")
+    .count();
+}
+
+/** Same unambiguous alphabet as the server: no O/0, I/1 or L. */
+const LOCAL_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+/**
+ * Provisional code the teacher can read and hand out instantly. The server
+ * reuses it when the pending creation finally syncs (unless it was taken).
+ */
+export function newLocalStudentCode() {
+  const bytes = new Uint8Array(4);
+  crypto.getRandomValues(bytes);
+  return Array.from(
+    bytes,
+    (byte) => LOCAL_CODE_ALPHABET[byte % LOCAL_CODE_ALPHABET.length],
+  ).join("");
+}
+
+export async function queueStudentCreation(
+  input: StudentCreationPayload,
+): Promise<PendingStudentCreation> {
+  const db = getLocalDb();
+  const queueId = await db.offlineQueue.add({
+    clientId: input.clientId,
+    kind: "student",
+    payload: JSON.stringify(input),
+    createdAt: input.createdAt,
+    attempts: 0,
+    status: "pending",
+  });
+  if (queueId == null) {
+    throw new Error("No se pudo escribir el alumno en la cola local.");
+  }
+  return { ...input, queueId: Number(queueId) };
+}
+
+function parseStudentCreation(
+  payload: string,
+): StudentCreationPayload | null {
+  try {
+    const value = JSON.parse(payload) as Partial<StudentCreationPayload>;
+    if (
+      typeof value.clientId !== "string" ||
+      typeof value.code !== "string" ||
+      typeof value.name !== "string" ||
+      typeof value.level !== "number" ||
+      typeof value.weeklyGoalMinutes !== "number" ||
+      typeof value.createdAt !== "string"
+    ) {
+      return null;
+    }
+    return {
+      clientId: value.clientId,
+      code: value.code,
+      name: value.name,
+      age: typeof value.age === "number" ? value.age : null,
+      level: value.level,
+      weeklyGoalMinutes: value.weeklyGoalMinutes,
+      notes: typeof value.notes === "string" ? value.notes : "",
+      createdAt: value.createdAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function readPendingStudentCreations(): Promise<
+  PendingStudentCreation[]
+> {
+  const entries = await getLocalDb().offlineQueue
+    .where("kind")
+    .equals("student")
+    .and(
+      (entry) => entry.status === "pending" || entry.status === "failed",
+    )
+    .toArray();
+
+  return entries.flatMap((entry) => {
+    const payload = parseStudentCreation(entry.payload);
+    if (!payload) return [];
+    return [{ ...payload, queueId: entry.id! }];
+  });
+}
+
+/** Removes the outbox row once SQLite confirmed the exact same client id. */
+export async function completeStudentCreation(clientId: string) {
+  const db = getLocalDb();
+  const rows = await db.offlineQueue
+    .where("clientId")
+    .equals(clientId)
+    .and((entry) => entry.kind === "student")
+    .toArray();
+  await db.offlineQueue.bulkDelete(
+    rows.flatMap((entry) => (entry.id == null ? [] : [entry.id])),
+  );
 }
 
 export async function markQueueEntry(
