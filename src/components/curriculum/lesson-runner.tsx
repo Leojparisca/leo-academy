@@ -20,6 +20,8 @@ import { ChordArchitect } from "@/components/games/chord-architect";
 import { GroovePadDual } from "@/components/games/groove-pad-dual";
 import { IntervalHunter } from "@/components/games/interval-hunter";
 import { Stars, type GameResult } from "@/components/games/game-ui";
+import { MelodyGuided } from "@/components/curriculum/melody-guided";
+import { RhythmCallResponse } from "@/components/curriculum/rhythm-call-response";
 import {
   BRANCHES,
   CHORD_QUALITIES,
@@ -43,7 +45,7 @@ export function LessonRunner({
   node: CurriculumNode;
   onClose: () => void;
 }) {
-  const { recordCurriculumResult } = useAcademy();
+  const { recordCurriculumResult, notify } = useAcademy();
   const [stepIndex, setStepIndex] = useState(0);
   const [done, setDone] = useState([false, false, false, false]);
   const [reto, setReto] = useState<{ result: GameResult; xp: number } | null>(
@@ -51,6 +53,7 @@ export function LessonRunner({
   );
   const [saving, setSaving] = useState(false);
   const branch = BRANCHES[node.branch];
+  const guided = node.branch === "ritmo" || node.branch === "melodia";
   const step = node.steps[stepIndex];
   const closeRef = useRef(onClose);
   const firstButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -128,6 +131,39 @@ export function LessonRunner({
     });
   };
 
+  /**
+   * Guided rhythm/melody lessons seal the node through the same
+   * `recordCurriculumResult` pipeline as the old challenge step. No schema,
+   * node id or stored progress is touched.
+   */
+  const handleGuidedComplete = async (stars: 1 | 2 | 3, accuracy: number) => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const saved = await recordCurriculumResult({
+        nodeId: node.id,
+        stars,
+        accuracy,
+      });
+      setReto({
+        result: {
+          game: node.branch === "ritmo" ? "rhythm" : "melody",
+          score: Math.round(accuracy),
+          accuracy: saved.accuracy,
+          stars: saved.stars as 1 | 2 | 3,
+          xp: saved.xp,
+          detail: node.title,
+          stats: {},
+        },
+        xp: saved.xp,
+      });
+    } catch {
+      notify("No pudimos sellar el nivel. Vuelve a intentarlo.", "warning");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (typeof document === "undefined") return null;
 
   return createPortal(
@@ -181,117 +217,152 @@ export function LessonRunner({
               </button>
             </div>
 
-            <div className="mt-3 flex items-center gap-1.5">
-              {node.steps.map((entry, index) => {
-                const Icon = STEP_ICON[index];
-                const active = index === stepIndex;
-                return (
-                  <button
-                    key={entry.kind}
-                    type="button"
-                    onClick={() => {
-                      if (index <= stepIndex || done[index - 1]) setStepIndex(index);
-                    }}
-                    className={cn(
-                      "flex min-h-0 flex-1 items-center justify-center gap-1 rounded-full border px-1.5 py-1.5 text-[6px] font-semibold uppercase tracking-[0.1em] transition-all duration-300",
-                      active
-                        ? "border-white/15 bg-white/[0.07] text-ivory"
-                        : done[index]
-                          ? "border-[#7DE2C3]/20 bg-[#7DE2C3]/[0.05] text-[#7DE2C3]"
-                          : "border-white/[0.04] bg-white/[0.01] text-faint/60",
-                    )}
-                    aria-current={active ? "step" : undefined}
-                  >
-                    {done[index] && !active ? (
-                      <Check size={9} strokeWidth={3} />
-                    ) : (
-                      <Icon size={9} />
-                    )}
-                    <span className="hidden min-[370px]:inline">{STEP_LABEL[index]}</span>
-                  </button>
-                );
-              })}
-            </div>
+            {!guided && (
+              <div className="mt-3 flex items-center gap-1.5">
+                {node.steps.map((entry, index) => {
+                  const Icon = STEP_ICON[index];
+                  const active = index === stepIndex;
+                  return (
+                    <button
+                      key={entry.kind}
+                      type="button"
+                      onClick={() => {
+                        if (index <= stepIndex || done[index - 1]) {
+                          setStepIndex(index);
+                        }
+                      }}
+                      className={cn(
+                        "flex min-h-0 flex-1 items-center justify-center gap-1 rounded-full border px-1.5 py-1.5 text-[6px] font-semibold uppercase tracking-[0.1em] transition-all duration-300",
+                        active
+                          ? "border-white/15 bg-white/[0.07] text-ivory"
+                          : done[index]
+                            ? "border-[#7DE2C3]/20 bg-[#7DE2C3]/[0.05] text-[#7DE2C3]"
+                            : "border-white/[0.04] bg-white/[0.01] text-faint/60",
+                      )}
+                      aria-current={active ? "step" : undefined}
+                    >
+                      {done[index] && !active ? (
+                        <Check size={9} strokeWidth={3} />
+                      ) : (
+                        <Icon size={9} />
+                      )}
+                      <span className="hidden min-[370px]:inline">
+                        {STEP_LABEL[index]}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </header>
 
-        <div className="flex items-center gap-2">
-          <span
-            className="rounded-full border px-2 py-0.5 text-[6.5px] font-bold uppercase tracking-[0.18em]"
-            style={{
-              borderColor: `${branch.color}33`,
-              background: `${branch.color}0f`,
-              color: branch.color,
-            }}
-          >
-            Paso {stepIndex + 1} · {STEP_LABEL[stepIndex]}
-          </span>
-          <span className="text-[6.5px] font-semibold uppercase tracking-[0.15em] text-faint">
-            {node.minutes} min · {node.concept}
-          </span>
-        </div>
+        {!guided && (
+          <>
+            <div className="flex items-center gap-2">
+              <span
+                className="rounded-full border px-2 py-0.5 text-[6.5px] font-bold uppercase tracking-[0.18em]"
+                style={{
+                  borderColor: `${branch.color}33`,
+                  background: `${branch.color}0f`,
+                  color: branch.color,
+                }}
+              >
+                Paso {stepIndex + 1} · {STEP_LABEL[stepIndex]}
+              </span>
+              <span className="text-[6.5px] font-semibold uppercase tracking-[0.15em] text-faint">
+                {node.minutes} min · {node.concept}
+              </span>
+            </div>
 
-        <h1 className="mt-3 font-display text-[30px] leading-[1.02] tracking-[-0.025em] text-ivory">
-          {step.title}
-        </h1>
-        <p className="mt-2 max-w-[330px] text-[11px] leading-relaxed text-muted">
-          {step.prompt}
-        </p>
+            <h1 className="mt-3 font-display text-[30px] leading-[1.02] tracking-[-0.025em] text-ivory">
+              {step.title}
+            </h1>
+            <p className="mt-2 max-w-[330px] text-[11px] leading-relaxed text-muted">
+              {step.prompt}
+            </p>
+          </>
+        )}
 
         <div className="mt-4">
-          {stepIndex === 0 && (
-            <FeelStep node={node} done={done[0]} onDone={completeStep} />
-          )}
-          {stepIndex === 1 && (
-            <ListenStep node={node} done={done[1]} onDone={completeStep} />
-          )}
-          {stepIndex === 2 && (
-            <ConceptStep node={node} done={done[2]} onDone={completeStep} />
-          )}
-          {stepIndex === 3 && !reto && (
-            <div className="space-y-3">
-              <div className="rounded-[16px] border border-white/[0.05] bg-white/[0.015] px-3.5 py-2.5">
-                <p className="text-[8.5px] leading-relaxed text-muted">
-                  {step.cue} El reto abre el juego completo con la configuración
-                  de este nivel.
-                </p>
-              </div>
-              {node.branch === "ritmo" && node.drill.kind === "rhythm" && (
-                <GroovePadDual
-                  drill={node.drill}
-                  barsOverride={2}
-                  compact
-                  persist={false}
-                  finishLabel="Sellar reto"
-                  xpNote="El XP se acredita al sellar el reto"
-                  onFinish={handleReto}
-                />
+          {guided ? (
+            <>
+              {!reto &&
+                node.branch === "ritmo" &&
+                node.drill.kind === "rhythm" && (
+                  <RhythmCallResponse
+                    drill={node.drill}
+                    onComplete={handleGuidedComplete}
+                  />
+                )}
+              {!reto &&
+                node.branch === "melodia" &&
+                node.drill.kind === "melody" && (
+                  <MelodyGuided
+                    drill={node.drill}
+                    onComplete={handleGuidedComplete}
+                  />
+                )}
+            </>
+          ) : (
+            <>
+              {stepIndex === 0 && (
+                <FeelStep node={node} done={done[0]} onDone={completeStep} />
               )}
-              {node.branch === "melodia" && node.drill.kind === "melody" && (
-                <IntervalHunter
-                  drill={node.drill}
-                  roundsOverride={Math.min(5, node.drill.rounds)}
-                  compact
-                  persist={false}
-                  finishLabel="Sellar reto"
-                  xpNote="El XP se acredita al sellar el reto"
-                  onFinish={handleReto}
-                />
+              {stepIndex === 1 && (
+                <ListenStep node={node} done={done[1]} onDone={completeStep} />
               )}
-              {node.branch === "armonia" && node.drill.kind === "harmony" && (
-                <ChordArchitect
-                  drill={node.drill}
-                  compact
-                  persist={false}
-                  finishLabel="Sellar reto"
-                  xpNote="El XP se acredita al sellar el reto"
-                  onFinish={handleReto}
-                />
+              {stepIndex === 2 && (
+                <ConceptStep node={node} done={done[2]} onDone={completeStep} />
               )}
-            </div>
+              {stepIndex === 3 && !reto && (
+                <div className="space-y-3">
+                  <div className="rounded-[16px] border border-white/[0.05] bg-white/[0.015] px-3.5 py-2.5">
+                    <p className="text-[8.5px] leading-relaxed text-muted">
+                      {step.cue} El reto abre el juego completo con la
+                      configuración de este nivel.
+                    </p>
+                  </div>
+                  {node.branch === "ritmo" && node.drill.kind === "rhythm" && (
+                    <GroovePadDual
+                      drill={node.drill}
+                      barsOverride={2}
+                      compact
+                      persist={false}
+                      finishLabel="Sellar reto"
+                      xpNote="El XP se acredita al sellar el reto"
+                      onFinish={handleReto}
+                    />
+                  )}
+                  {node.branch === "melodia" &&
+                    node.drill.kind === "melody" && (
+                      <IntervalHunter
+                        drill={node.drill}
+                        roundsOverride={Math.min(5, node.drill.rounds)}
+                        compact
+                        persist={false}
+                        finishLabel="Sellar reto"
+                        xpNote="El XP se acredita al sellar el reto"
+                        onFinish={handleReto}
+                      />
+                    )}
+                  {node.branch === "armonia" &&
+                    node.drill.kind === "harmony" && (
+                      <ChordArchitect
+                        drill={node.drill}
+                        compact
+                        persist={false}
+                        finishLabel="Sellar reto"
+                        xpNote="El XP se acredita al sellar el reto"
+                        onFinish={handleReto}
+                      />
+                    )}
+                </div>
+              )}
+            </>
           )}
 
-          {stepIndex === 3 && reto && (
+          {(guided || stepIndex === 3) && reto && (
             <motion.div
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
@@ -324,11 +395,13 @@ export function LessonRunner({
                 type="button"
                 onClick={() => {
                   setReto(null);
-                  setDone((previous) => {
-                    const next = [...previous];
-                    next[3] = false;
-                    return next;
-                  });
+                  if (!guided) {
+                    setDone((previous) => {
+                      const next = [...previous];
+                      next[3] = false;
+                      return next;
+                    });
+                  }
                 }}
                 className="mt-2 text-[8px] font-semibold uppercase tracking-[0.14em] text-faint"
               >
@@ -338,7 +411,7 @@ export function LessonRunner({
           )}
         </div>
 
-        {stepIndex < 3 && (
+        {!guided && stepIndex < 3 && (
           <div className="mt-4 flex items-center gap-2">
             <p className="flex-1 text-[7.5px] leading-relaxed text-faint">
               {step.cue}
