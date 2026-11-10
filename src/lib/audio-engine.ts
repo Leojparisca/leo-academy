@@ -6,12 +6,13 @@
  * A hand-built polyphonic Web Audio instrument: additive harmonics with a
  * detuned twin fundamental, per-partial decay, velocity-sensitive dynamic
  * low-pass filter, hammer noise transient and a real ADSR amplitude envelope.
- * It also synthesises the percussion kit (kick, snare, woodblock/click) used by
- * the rhythm laboratory. No samples, no beeps.
+ * It also synthesises the percussion kit (warm kick, defined snare, bright
+ * hi-hat, woodblock/click) used by the rhythm laboratory, plus a spaced
+ * arpeggio used as a reward. No samples, no beeps.
  */
 
 export type EnginePreset = "rhodes" | "grand" | "glass";
-export type PercussionKind = "kick" | "snare" | "woodblock" | "click";
+export type PercussionKind = "kick" | "snare" | "hat" | "woodblock" | "click";
 
 type Partial = { ratio: number; gain: number };
 
@@ -104,6 +105,7 @@ type Voice = {
   sustained: boolean;
   startedAt: number;
   cleanup: number | null;
+  extra: AudioNode[];
 };
 
 const clamp = (value: number, min: number, max: number) =>
@@ -348,7 +350,11 @@ class AudioEngine {
     this.preset = preset;
   }
 
-  noteOn(midi: number, velocity = 0.8) {
+  noteOn(
+    midi: number,
+    velocity = 0.8,
+    { when, wet }: { when?: number; wet?: number } = {},
+  ) {
     const context = this.ensureContext();
     if (!context) return false;
     this.hasPlayed = true;
@@ -365,7 +371,10 @@ class AudioEngine {
       if (oldest) this.killVoice(oldest, 0.05);
     }
 
-    const voice = this.createVoice(context, midi, clamp(velocity, 0.1, 1));
+    const voice = this.createVoice(context, midi, clamp(velocity, 0.1, 1), {
+      when,
+      wet,
+    });
     if (!voice) return false;
     this.voices.set(midi, voice);
     return true;
@@ -375,10 +384,11 @@ class AudioEngine {
     context: AudioContext,
     midi: number,
     velocity: number,
+    { when, wet }: { when?: number; wet?: number } = {},
   ): Voice | null {
     if (!this.input || !this.reverbSend) return null;
     const preset = PRESETS[this.preset];
-    const now = context.currentTime + 0.004;
+    const now = Math.max(context.currentTime, when ?? context.currentTime + 0.004);
     const base = 440 * Math.pow(2, (midi - 69) / 12);
 
     const filter = context.createBiquadFilter();
@@ -414,7 +424,16 @@ class AudioEngine {
     filter.connect(amp);
     amp.connect(panner);
     panner.connect(this.input);
-    panner.connect(this.reverbSend);
+    const extra: AudioNode[] = [];
+    if (wet && wet > 0) {
+      const send = context.createGain();
+      send.gain.value = wet;
+      panner.connect(send);
+      send.connect(this.reverbSend);
+      extra.push(send);
+    } else {
+      panner.connect(this.reverbSend);
+    }
 
     const sources: AudioScheduledSourceNode[] = [];
 
@@ -498,6 +517,7 @@ class AudioEngine {
       sustained: false,
       startedAt: now,
       cleanup: null,
+      extra,
     };
 
     voice.cleanup = window.setTimeout(() => {
@@ -596,6 +616,13 @@ class AudioEngine {
         /* Already disconnected. */
       }
     }
+    for (const node of voice.extra) {
+      try {
+        node.disconnect();
+      } catch {
+        /* Already disconnected. */
+      }
+    }
   }
 
   setSustain(on: boolean) {
@@ -630,6 +657,39 @@ class AudioEngine {
     }, duration * 1000);
   }
 
+  /**
+   * Reward arpeggio: the chord blooms note by note into a wide, reverberated
+   * room. Everything is scheduled on the audio clock, so it never drifts.
+   */
+  playArpeggio(
+    midis: number[],
+    {
+      step = 0.085,
+      duration = 1.9,
+      velocity = 0.72,
+      wet = 0.55,
+    }: { step?: number; duration?: number; velocity?: number; wet?: number } = {},
+  ) {
+    if (!midis.length) return;
+    const context = this.ensureContext();
+    if (!context) return;
+    this.hasPlayed = true;
+    if (context.state !== "running") void context.resume().catch(() => undefined);
+    this.scheduleSilenceCheck(600 + midis.length * step * 1000);
+    const origin = context.currentTime;
+    midis.forEach((midi, index) => {
+      const start = origin + 0.04 + index * step;
+      this.noteOn(midi, Math.max(0.18, velocity - index * 0.012), {
+        when: start,
+        wet,
+      });
+      window.setTimeout(
+        () => this.forceNoteOff(midi),
+        Math.max(80, (start - origin + duration) * 1000),
+      );
+    });
+  }
+
   private routeExtra(node: AudioNode, wet = 0.3) {
     if (!this.input || !this.reverbSend) return;
     const send = this.context?.createGain();
@@ -652,31 +712,52 @@ class AudioEngine {
     const start = when ?? context.currentTime;
 
     if (kind === "kick") {
-      const oscillator = context.createOscillator();
-      oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(accent ? 158 : 142, start);
-      oscillator.frequency.exponentialRampToValueAtTime(44, start + 0.12);
-      const gain = context.createGain();
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.linearRampToValueAtTime(accent ? 0.85 : 0.68, start + 0.004);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.4);
-      oscillator.connect(gain);
-      this.routeExtra(gain, 0.16);
-      oscillator.start(start);
-      oscillator.stop(start + 0.44);
+      const body = context.createOscillator();
+      body.type = "sine";
+      body.frequency.setValueAtTime(accent ? 156 : 140, start);
+      body.frequency.exponentialRampToValueAtTime(46, start + 0.13);
+      const bodyGain = context.createGain();
+      bodyGain.gain.setValueAtTime(0.0001, start);
+      bodyGain.gain.linearRampToValueAtTime(accent ? 0.82 : 0.66, start + 0.005);
+      bodyGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.42);
+
+      // A round sub layer under the beater: warm, never boomy.
+      const sub = context.createOscillator();
+      sub.type = "sine";
+      sub.frequency.setValueAtTime(62, start);
+      sub.frequency.exponentialRampToValueAtTime(48, start + 0.2);
+      const subGain = context.createGain();
+      subGain.gain.setValueAtTime(0.0001, start);
+      subGain.gain.linearRampToValueAtTime(accent ? 0.3 : 0.22, start + 0.008);
+      subGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.34);
+
+      const warmth = context.createBiquadFilter();
+      warmth.type = "lowpass";
+      warmth.frequency.value = 320;
+      warmth.Q.value = 0.55;
+
+      body.connect(bodyGain);
+      sub.connect(subGain);
+      bodyGain.connect(warmth);
+      subGain.connect(warmth);
+      this.routeExtra(warmth, 0.14);
+      body.start(start);
+      body.stop(start + 0.46);
+      sub.start(start);
+      sub.stop(start + 0.38);
 
       if (this.noise) {
         const click = context.createBufferSource();
         click.buffer = this.noise;
         const high = context.createBiquadFilter();
         high.type = "highpass";
-        high.frequency.value = 1800;
+        high.frequency.value = 2400;
         const clickGain = context.createGain();
-        clickGain.gain.setValueAtTime(0.12, start);
-        clickGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.025);
+        clickGain.gain.setValueAtTime(0.1, start);
+        clickGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.022);
         click.connect(high);
         high.connect(clickGain);
-        this.routeExtra(clickGain, 0.05);
+        this.routeExtra(clickGain, 0.04);
         click.start(start);
         click.stop(start + 0.05);
       }
@@ -689,28 +770,69 @@ class AudioEngine {
         noise.buffer = this.noise;
         const band = context.createBiquadFilter();
         band.type = "bandpass";
-        band.frequency.value = accent ? 2200 : 1850;
-        band.Q.value = 0.8;
+        band.frequency.value = accent ? 2150 : 1900;
+        band.Q.value = 0.75;
         const gain = context.createGain();
-        gain.gain.setValueAtTime(accent ? 0.5 : 0.38, start);
-        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.19);
+        gain.gain.setValueAtTime(accent ? 0.46 : 0.36, start);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.17);
         noise.connect(band);
         band.connect(gain);
-        this.routeExtra(gain, 0.32);
+        this.routeExtra(gain, 0.3);
         noise.start(start);
-        noise.stop(start + 0.22);
+        noise.stop(start + 0.2);
+
+        // Bright "crack" that gives the attack its definition.
+        const crack = context.createBufferSource();
+        crack.buffer = this.noise;
+        const high = context.createBiquadFilter();
+        high.type = "highpass";
+        high.frequency.value = 4600;
+        const crackGain = context.createGain();
+        crackGain.gain.setValueAtTime(accent ? 0.2 : 0.15, start);
+        crackGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.07);
+        crack.connect(high);
+        high.connect(crackGain);
+        this.routeExtra(crackGain, 0.18);
+        crack.start(start);
+        crack.stop(start + 0.09);
       }
       const body = context.createOscillator();
       body.type = "triangle";
-      body.frequency.setValueAtTime(196, start);
-      body.frequency.exponentialRampToValueAtTime(140, start + 0.08);
+      body.frequency.setValueAtTime(198, start);
+      body.frequency.exponentialRampToValueAtTime(148, start + 0.07);
       const bodyGain = context.createGain();
-      bodyGain.gain.setValueAtTime(0.22, start);
-      bodyGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.1);
+      bodyGain.gain.setValueAtTime(0.2, start);
+      bodyGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.09);
       body.connect(bodyGain);
-      this.routeExtra(bodyGain, 0.12);
+      this.routeExtra(bodyGain, 0.1);
       body.start(start);
-      body.stop(start + 0.12);
+      body.stop(start + 0.11);
+      return;
+    }
+
+    if (kind === "hat") {
+      if (this.noise) {
+        const noise = context.createBufferSource();
+        noise.buffer = this.noise;
+        const high = context.createBiquadFilter();
+        high.type = "highpass";
+        high.frequency.value = 7200;
+        high.Q.value = 0.7;
+        const shimmer = context.createBiquadFilter();
+        shimmer.type = "bandpass";
+        shimmer.frequency.value = 10800;
+        shimmer.Q.value = 0.85;
+        const gain = context.createGain();
+        const decay = accent ? 0.085 : 0.05;
+        gain.gain.setValueAtTime(accent ? 0.19 : 0.125, start);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + decay);
+        noise.connect(high);
+        high.connect(shimmer);
+        shimmer.connect(gain);
+        this.routeExtra(gain, 0.1);
+        noise.start(start);
+        noise.stop(start + decay + 0.02);
+      }
       return;
     }
 

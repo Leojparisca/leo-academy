@@ -1,7 +1,7 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { Hand, Play, Timer, Waves } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import { Flame, Hand, Play, Timer, Waves } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAcademy } from "@/components/providers/academy-provider";
 import {
@@ -22,9 +22,15 @@ type Judge = { id: number; label: string; tone: string };
 
 type Expected = { time: number; hand: DrumHand; judged: boolean };
 
+/** Generous mobile-friendly window: ±140 ms around every expected hit. */
+const TOLERANCE = 0.14;
+/** Inside this window the hit feels locked-in and earns the perfect flash. */
+const PERFECT = 0.045;
+const FIRE_COMBO = 10;
+
 const DEFAULT_DRILL: RhythmDrill = {
   kind: "rhythm",
-  bpm: 76,
+  bpm: 88,
   bars: 4,
   label: "Negras alternadas",
   hits: [
@@ -34,6 +40,20 @@ const DEFAULT_DRILL: RhythmDrill = {
     { at: 3, hand: "right" },
   ],
 };
+
+/** Combo tiers: 1x · 2x · 3x · ¡Fuego! */
+function multiplierFor(combo: number) {
+  if (combo >= FIRE_COMBO) return 4;
+  if (combo >= 6) return 3;
+  if (combo >= 3) return 2;
+  return 1;
+}
+
+function vibrate(ms: number) {
+  if (typeof navigator === "undefined") return;
+  if (typeof navigator.vibrate !== "function") return;
+  navigator.vibrate(ms);
+}
 
 export function GroovePadDual({
   drill = DEFAULT_DRILL,
@@ -58,6 +78,8 @@ export function GroovePadDual({
   const [result, setResult] = useState<GameResult | null>(null);
   const [judge, setJudge] = useState<Judge | null>(null);
   const [combo, setCombo] = useState(0);
+  const [multiplier, setMultiplier] = useState(1);
+  const [flash, setFlash] = useState<{ id: number; fire: boolean } | null>(null);
   const [bar, setBar] = useState(0);
   const [activeHand, setActiveHand] = useState<DrumHand | null>(null);
 
@@ -72,9 +94,11 @@ export function GroovePadDual({
   const missRef = useRef(0);
   const comboRef = useRef(0);
   const bestComboRef = useRef(0);
+  const bonusRef = useRef(0);
   const barRef = useRef(0);
   const frameRef = useRef<number | null>(null);
   const judgeTimer = useRef<number | null>(null);
+  const loopTimers = useRef<number[]>([]);
   const playheadRef = useRef<HTMLSpanElement | null>(null);
   const finishedRef = useRef(false);
 
@@ -89,6 +113,8 @@ export function GroovePadDual({
   const clearTimers = useCallback(() => {
     if (frameRef.current) cancelAnimationFrame(frameRef.current);
     if (judgeTimer.current) window.clearTimeout(judgeTimer.current);
+    loopTimers.current.forEach((timer) => window.clearTimeout(timer));
+    loopTimers.current = [];
     frameRef.current = null;
     judgeTimer.current = null;
   }, []);
@@ -119,10 +145,12 @@ export function GroovePadDual({
     const earned = perfectRef.current + goodRef.current * 0.6;
     const accuracy = total ? Math.round((earned / total) * 100) : 0;
     const stars = starsForAccuracy(accuracy);
-    const xp = Math.round(accuracy * 0.7 + bestComboRef.current * 3 + 20);
+    const xp = Math.round(
+      accuracy * 0.7 + bestComboRef.current * 3 + bonusRef.current * 0.25 + 20,
+    );
     const next: GameResult = {
       game: "rhythm",
-      score: Math.round(earned * 100),
+      score: Math.round(earned * 100) + bonusRef.current,
       accuracy,
       stars,
       xp,
@@ -150,6 +178,35 @@ export function GroovePadDual({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audio, persist]);
 
+  /**
+   * Schedules one bar of the backing groove: soft hi-hat eighths, warm kick,
+   * defined snare and a piano anchor on the downbeat. Bars are scheduled as
+   * they arrive, so leaving the game never leaves drums ringing.
+   */
+  const scheduleBar = useCallback(
+    (index: number, barStart: number) => {
+      for (let step = 0; step < 8; step += 1) {
+        audio.playPercussion("hat", {
+          when: barStart + (step * spb) / 2,
+          accent: step % 2 === 0,
+        });
+      }
+      audio.playPercussion("kick", { when: barStart, accent: true });
+      audio.playPercussion("kick", { when: barStart + 2 * spb });
+      audio.playPercussion("kick", { when: barStart + 3.5 * spb });
+      audio.playPercussion("snare", { when: barStart + spb });
+      audio.playPercussion("snare", { when: barStart + 3 * spb });
+
+      const anchorDelay = Math.max(0, (barStart - audio.now()) * 1000);
+      loopTimers.current.push(
+        window.setTimeout(() => {
+          audioRef.current.playNote(index % 2 === 0 ? 48 : 55, 1.15, 0.32);
+        }, anchorDelay),
+      );
+    },
+    [audio, spb],
+  );
+
   const paint = useCallback(() => {
     if (phaseRef.current !== "playing") return;
     const elapsed = audio.now() - startRef.current;
@@ -164,6 +221,7 @@ export function GroovePadDual({
     if (nextBar !== barRef.current) {
       barRef.current = nextBar;
       setBar(nextBar);
+      scheduleBar(nextBar, startRef.current + nextBar * 4 * spb);
     }
 
     if (elapsed >= total + 0.45) {
@@ -172,7 +230,7 @@ export function GroovePadDual({
     }
 
     frameRef.current = requestAnimationFrame(paint);
-  }, [audio, bars, finalize, spb]);
+  }, [audio, bars, finalize, scheduleBar, spb]);
 
   const start = useCallback(() => {
     audio.unlock();
@@ -183,13 +241,16 @@ export function GroovePadDual({
     missRef.current = 0;
     comboRef.current = 0;
     bestComboRef.current = 0;
+    bonusRef.current = 0;
     barRef.current = 0;
     setCombo(0);
+    setMultiplier(1);
+    setFlash(null);
     setBar(0);
     setJudge(null);
     setResult(null);
 
-    const startAt = audio.now() + 0.55;
+    const startAt = audio.now() + 0.75;
     startRef.current = startAt;
     const events: Expected[] = [];
 
@@ -201,22 +262,36 @@ export function GroovePadDual({
           judged: false,
         });
       }
-      for (let beat = 0; beat < 4; beat += 1) {
-        audio.playPercussion("click", {
-          when: startAt + (index * 4 + beat) * spb,
-          accent: beat === 0,
-        });
-      }
     }
 
     events.sort((a, b) => a.time - b.time);
     eventsRef.current = events;
 
+    // Only the first bar goes out now; `paint` schedules the rest as the
+    // playhead reaches them, so stopping early silences the drums quickly.
+    scheduleBar(0, startAt);
+
     setPhase("playing");
     phaseRef.current = "playing";
 
     frameRef.current = requestAnimationFrame(paint);
-  }, [audio, bars, clearTimers, drill.hits, paint, spb]);
+  }, [audio, bars, clearTimers, drill.hits, paint, scheduleBar, spb]);
+
+  const bumpCombo = () => {
+    comboRef.current += 1;
+    bestComboRef.current = Math.max(bestComboRef.current, comboRef.current);
+    const next = multiplierFor(comboRef.current);
+    if (next > 1) bonusRef.current += (next - 1) * 25;
+    setCombo(comboRef.current);
+    setMultiplier(next);
+    setFlash({ id: Date.now(), fire: next >= 4 });
+  };
+
+  const dropCombo = () => {
+    comboRef.current = 0;
+    setCombo(0);
+    setMultiplier(1);
+  };
 
   const tap = (hand: DrumHand) => {
     if (phaseRef.current !== "playing") return;
@@ -231,7 +306,7 @@ export function GroovePadDual({
     for (const event of eventsRef.current) {
       if (event.judged) continue;
       const delta = Math.abs(event.time - now);
-      if (delta < 0.3 && delta < bestDelta) {
+      if (delta <= TOLERANCE && delta < bestDelta) {
         best = event;
         bestDelta = delta;
       }
@@ -239,8 +314,8 @@ export function GroovePadDual({
 
     if (!best) {
       missRef.current += 1;
-      comboRef.current = 0;
-      setCombo(0);
+      dropCombo();
+      vibrate(12);
       showJudge("Fuera de tiempo", "#FB7185");
       return;
     }
@@ -248,30 +323,21 @@ export function GroovePadDual({
     best.judged = true;
     if (best.hand !== hand) {
       missRef.current += 1;
-      comboRef.current = 0;
-      setCombo(0);
+      dropCombo();
+      vibrate(12);
       showJudge("Mano equivocada", "#FB7185");
       return;
     }
 
-    const ms = Math.abs(now - best.time) * 1000;
-    if (ms < 35) {
+    if (bestDelta < PERFECT) {
       perfectRef.current += 1;
-      comboRef.current += 1;
-      bestComboRef.current = Math.max(bestComboRef.current, comboRef.current);
-      setCombo(comboRef.current);
-      showJudge("Perfecto", "#7DE2C3");
-    } else if (ms < 80) {
-      goodRef.current += 1;
-      comboRef.current += 1;
-      bestComboRef.current = Math.max(bestComboRef.current, comboRef.current);
-      setCombo(comboRef.current);
-      showJudge("Bueno", "#38BDF8");
+      bumpCombo();
+      vibrate(25);
+      showJudge("¡Perfecto!", "#7DE2C3");
     } else {
-      missRef.current += 1;
-      comboRef.current = 0;
-      setCombo(0);
-      showJudge("Fuera de tiempo", "#FB7185");
+      goodRef.current += 1;
+      bumpCombo();
+      showJudge("¡A tiempo!", "#38BDF8");
     }
   };
 
@@ -294,6 +360,8 @@ export function GroovePadDual({
     setResult(null);
     setJudge(null);
     setCombo(0);
+    setMultiplier(1);
+    setFlash(null);
     setBar(0);
   };
 
@@ -361,9 +429,9 @@ export function GroovePadDual({
 
           <div className="mt-3 grid grid-cols-3 gap-2 text-center">
             {[
-              { label: "Perfecto", value: "< 35 ms", tone: "text-[#7DE2C3]" },
-              { label: "Bueno", value: "< 80 ms", tone: "text-glow" },
-              { label: "Fuera", value: "> 80 ms", tone: "text-[#FB7185]" },
+              { label: "Perfecto", value: "< 45 ms", tone: "text-[#7DE2C3]" },
+              { label: "A tiempo", value: "± 140 ms", tone: "text-glow" },
+              { label: "Fuera", value: "> 140 ms", tone: "text-[#FB7185]" },
             ].map((item) => (
               <div
                 key={item.label}
@@ -375,6 +443,18 @@ export function GroovePadDual({
                 <p className="mt-0.5 text-[7px] text-faint">{item.value}</p>
               </div>
             ))}
+          </div>
+
+          <div className="mt-2 flex items-start gap-2 rounded-[12px] border border-cyan-300/15 bg-cyan-300/[0.04] px-2.5 py-2">
+            <Flame
+              size={11}
+              className="mt-0.5 flex-none text-[#F5C15A]"
+              fill="currentColor"
+            />
+            <p className="text-[7.5px] leading-relaxed text-muted">
+              Loop de batería a {drill.bpm} BPM. Combo ×2 a los 3 golpes, ×3 a
+              los 6 y <span className="text-[#FFE7A8]">¡Fuego!</span> a los 10.
+            </p>
           </div>
 
           <button
@@ -390,13 +470,47 @@ export function GroovePadDual({
 
       {phase === "playing" && (
         <div className={cn("game-stage relative overflow-hidden rounded-[26px] p-3.5", compact && "p-3")}>
+          <AnimatePresence>
+            {flash && (
+              <motion.span
+                key={flash.id}
+                aria-hidden
+                initial={{ opacity: 0.9 }}
+                animate={{ opacity: 0 }}
+                transition={{ duration: flash.fire ? 0.55 : 0.35, ease: "easeOut" }}
+                className="pointer-events-none absolute inset-0 z-10 rounded-[26px]"
+                style={{
+                  boxShadow: flash.fire
+                    ? "inset 0 0 46px rgba(56,189,248,0.8), inset 0 0 0 2px rgba(245,193,90,0.55)"
+                    : "inset 0 0 30px rgba(56,189,248,0.5), inset 0 0 0 1.5px rgba(56,189,248,0.45)",
+                }}
+              />
+            )}
+          </AnimatePresence>
+
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-1.5 text-[7px] font-semibold uppercase tracking-[0.16em] text-faint">
               <Timer size={10} className="text-ember" />
               Compás {bar + 1}/{bars}
             </span>
-            <span className="text-[7px] font-semibold uppercase tracking-[0.16em] text-faint">
-              {drill.bpm} BPM · {drill.label}
+            <span className="flex items-center gap-1.5 text-[7px] font-semibold uppercase tracking-[0.16em] text-faint">
+              <span className="flex items-end gap-[2px]" aria-hidden>
+                {[0, 1, 2].map((index) => (
+                  <motion.span
+                    key={index}
+                    animate={{ opacity: [0.25, 1, 0.25] }}
+                    transition={{
+                      duration: 1.2,
+                      repeat: Infinity,
+                      delay: index * 0.12,
+                      ease: "easeInOut",
+                    }}
+                    className="block w-[2px] rounded-full bg-cyan-300"
+                    style={{ height: 4 + index * 3 }}
+                  />
+                ))}
+              </span>
+              Loop · {drill.bpm} BPM
             </span>
           </div>
 
@@ -405,16 +519,32 @@ export function GroovePadDual({
               {perfectRef.current + goodRef.current}
             </span>
             <div className="flex items-center gap-1.5">
-              {combo > 1 && (
-                <motion.span
-                  key={combo}
-                  initial={{ scale: 0.7, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  className="rounded-full border border-[#F5C15A]/20 bg-[#F5C15A]/[0.07] px-2 py-0.5 text-[8px] font-bold text-[#F5C15A]"
-                >
-                  ×{combo}
-                </motion.span>
+              {combo > 0 && (
+                <span className="text-[7px] font-semibold uppercase tracking-[0.12em] text-faint">
+                  racha {combo}
+                </span>
               )}
+              <AnimatePresence mode="popLayout">
+                {combo > 1 && (
+                  <motion.span
+                    key={multiplier}
+                    initial={{ scale: 0.6, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.8, opacity: 0 }}
+                    className={cn(
+                      "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[8px] font-bold",
+                      multiplier >= 4
+                        ? "border-[#F5C15A]/45 bg-[#F5C15A]/[0.14] text-[#FFE7A8] shadow-[0_0_18px_rgba(245,193,90,0.35)]"
+                        : multiplier >= 3
+                          ? "border-cyan-300/35 bg-cyan-300/[0.1] text-cyan-100"
+                          : "border-[#F5C15A]/20 bg-[#F5C15A]/[0.07] text-[#F5C15A]",
+                    )}
+                  >
+                    {multiplier >= 4 && <Flame size={9} fill="currentColor" />}
+                    {multiplier >= 4 ? "¡FUEGO!" : `×${multiplier}`}
+                  </motion.span>
+                )}
+              </AnimatePresence>
               <span className="text-[7px] font-semibold uppercase tracking-[0.15em] text-faint">
                 golpes
               </span>

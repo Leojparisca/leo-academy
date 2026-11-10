@@ -63,6 +63,18 @@ export function useAudioEngine() {
     ) => engine.playPercussion(kind, options),
     [engine],
   );
+  const playArpeggio = useCallback(
+    (
+      midis: number[],
+      options?: {
+        step?: number;
+        duration?: number;
+        velocity?: number;
+        wet?: number;
+      },
+    ) => engine.playArpeggio(midis, options),
+    [engine],
+  );
   const setSustain = useCallback(
     (on: boolean) => engine.setSustain(on),
     [engine],
@@ -93,6 +105,7 @@ export function useAudioEngine() {
       playNote,
       playChord,
       playPercussion,
+      playArpeggio,
       setSustain,
       setVolume,
       setPreset,
@@ -111,6 +124,7 @@ export function useAudioEngine() {
       playNote,
       playChord,
       playPercussion,
+      playArpeggio,
       setSustain,
       setVolume,
       setPreset,

@@ -9,6 +9,7 @@ import {
   Music2,
   Play,
   Volume2,
+  Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAcademy } from "@/components/providers/academy-provider";
@@ -49,6 +50,59 @@ const DEFAULT_DRILL: MelodyDrill = {
 };
 
 const NOTE_LETTERS = ["C", "D", "E", "F", "G", "A", "B"] as const;
+
+type Mode = "normal" | "lightning";
+const LIGHTNING_SECONDS = 30;
+
+/**
+ * Friendly listening mnemonics: every answer card carries a mood plus a tune
+ * the student already knows, so the ear has somewhere to land.
+ */
+const MNEMONICS: Record<
+  string,
+  { mood: string; hint: string; color: string }
+> = {
+  "2ª mayor": {
+    mood: "Cercano · luminoso",
+    hint: "“Cumpleaños feliz” empieza con este salto.",
+    color: "#7DE2C3",
+  },
+  "3ª menor": {
+    mood: "Triste · sombra",
+    hint: "El riff de “Smoke on the Water”.",
+    color: "#7C9CFF",
+  },
+  "3ª mayor": {
+    mood: "Alegre · soleado",
+    hint: "“Oh when the saints” arranca así.",
+    color: "#F2B45C",
+  },
+  "4ª justa": {
+    mood: "Heroico · abierto",
+    hint: "La marcha nupcial que todos conocen.",
+    color: "#9DB5FF",
+  },
+  "5ª justa": {
+    mood: "Estable · espacio",
+    hint: "La fanfarria de “Star Wars”.",
+    color: "#38BDF8",
+  },
+  Octava: {
+    mood: "Mismo nombre · brillo",
+    hint: "“Over the Rainbow”, primer salto.",
+    color: "#F5C15A",
+  },
+  Sube: {
+    mood: "Amanece",
+    hint: "La segunda nota queda arriba.",
+    color: "#7DE2C3",
+  },
+  Baja: {
+    mood: "Cae la tarde",
+    hint: "La segunda nota queda abajo.",
+    color: "#FB7185",
+  },
+};
 
 function pick<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)];
@@ -140,6 +194,7 @@ export function IntervalHunter({
   const rounds = roundsOverride ?? drill.rounds ?? 8;
 
   const [phase, setPhase] = useState<Phase>("intro");
+  const [mode, setMode] = useState<Mode>("normal");
   const [question, setQuestion] = useState<Question | null>(null);
   const [index, setIndex] = useState(0);
   const [correct, setCorrect] = useState(0);
@@ -148,12 +203,16 @@ export function IntervalHunter({
   const [picked, setPicked] = useState<string | null>(null);
   const [isCorrect, setIsCorrect] = useState(false);
   const [timeLeft, setTimeLeft] = useState(10);
+  const [points, setPoints] = useState(0);
   const [result, setResult] = useState<GameResult | null>(null);
 
   const questionCounter = useRef(0);
   const correctRef = useRef(0);
   const streakRef = useRef(0);
   const bestStreakRef = useRef(0);
+  const attemptsRef = useRef(0);
+  const pointsRef = useRef(0);
+  const lightningDeadlineRef = useRef(0);
   const playTimers = useRef<number[]>([]);
   const finishedRef = useRef(false);
 
@@ -178,47 +237,71 @@ export function IntervalHunter({
     [audio, clearPlayTimers],
   );
 
-  const finish = useCallback(() => {
-    if (finishedRef.current) return;
-    finishedRef.current = true;
-    const accuracy = Math.round((correctRef.current / rounds) * 100);
-    const stars = starsForAccuracy(accuracy);
-    const xp = Math.round(accuracy * 0.75 + bestStreakRef.current * 4 + 20);
-    const next: GameResult = {
-      game: "melody",
-      score: correctRef.current * 100 + bestStreakRef.current * 15,
-      accuracy,
-      stars,
-      xp,
-      detail:
-        drill.mode === "read"
-          ? "Cazador de lectura"
-          : "Cazador de intervalos",
-      stats: {
-        correct: correctRef.current,
-        total: rounds,
-        combo: bestStreakRef.current,
-      },
-    };
-    setResult(next);
-    setPhase("result");
-    audio.releaseAll();
-    if (persist) {
-      void recordGameResult({
-        skill: "melody",
-        accuracy,
-        xp,
-        detail: next.detail,
+  const playRising = useCallback(
+    (level = 0) => {
+      const root = 72 + Math.min(7, level);
+      [0, 4, 7, 12].forEach((offset, position) => {
+        const timer = window.setTimeout(() => {
+          audio.playNote(root + offset, 0.34, 0.72);
+        }, position * 78);
+        playTimers.current.push(timer);
       });
-    }
-  }, [audio, drill.mode, persist, recordGameResult, rounds]);
+    },
+    [audio],
+  );
+
+  const finish = useCallback(
+    (lightning = false) => {
+      if (finishedRef.current) return;
+      finishedRef.current = true;
+      const total = lightning ? Math.max(1, attemptsRef.current) : rounds;
+      const accuracy = Math.round((correctRef.current / total) * 100);
+      const stars = starsForAccuracy(accuracy);
+      const xp = lightning
+        ? Math.round(pointsRef.current * 0.06 + bestStreakRef.current * 4 + 20)
+        : Math.round(accuracy * 0.75 + bestStreakRef.current * 4 + 20);
+      const next: GameResult = {
+        game: "melody",
+        score: lightning
+          ? pointsRef.current
+          : correctRef.current * 100 + bestStreakRef.current * 15,
+        accuracy,
+        stars,
+        xp,
+        detail: lightning
+          ? "Racha Relámpago"
+          : drill.mode === "read"
+            ? "Cazador de lectura"
+            : "Cazador de intervalos",
+        stats: {
+          correct: correctRef.current,
+          total,
+          combo: bestStreakRef.current,
+        },
+      };
+      setResult(next);
+      setPhase("result");
+      audio.releaseAll();
+      if (persist) {
+        void recordGameResult({
+          skill: "melody",
+          accuracy,
+          xp,
+          detail: next.detail,
+        });
+      }
+    },
+    [audio, drill.mode, persist, recordGameResult, rounds],
+  );
 
   function submitAnswer(choice: string | null) {
     if (!question || phase !== "question") return;
+    const lightning = mode === "lightning";
     const right = choice === question.correct;
     setPicked(choice);
     setIsCorrect(right);
     setPhase("feedback");
+    attemptsRef.current += 1;
 
     if (right) {
       correctRef.current += 1;
@@ -227,6 +310,16 @@ export function IntervalHunter({
       setCorrect(correctRef.current);
       setStreak(streakRef.current);
       setBestStreak(bestStreakRef.current);
+
+      if (lightning) {
+        // Every consecutive answer is worth double: 100 → 200 points.
+        const doubled = streakRef.current >= 2;
+        pointsRef.current += doubled ? 200 : 100;
+        setPoints(pointsRef.current);
+        playRising(streakRef.current);
+      } else if (streakRef.current >= 3) {
+        playRising(streakRef.current);
+      }
     } else {
       streakRef.current = 0;
       setStreak(0);
@@ -235,10 +328,18 @@ export function IntervalHunter({
     if (question.mode === "read" || !right) {
       playSequence(question, true);
     }
+
+    // Lightning keeps the pulse fast: a correct answer flows into the next
+    // challenge without an extra tap.
+    if (lightning && right) {
+      const timer = window.setTimeout(() => next(), 560);
+      playTimers.current.push(timer);
+    }
   }
 
   const next = () => {
-    if (index + 1 >= rounds) {
+    if (finishedRef.current) return;
+    if (mode === "normal" && index + 1 >= rounds) {
       finish();
       return;
     }
@@ -248,25 +349,31 @@ export function IntervalHunter({
     setIndex(nextIndex);
     setQuestion(nextQuestion);
     setPicked(null);
-    setTimeLeft(10);
+    if (mode === "normal") setTimeLeft(10);
     setPhase("question");
   };
 
-  const start = () => {
+  const start = (nextMode: Mode = "normal") => {
     audio.unlock();
     clearPlayTimers();
     finishedRef.current = false;
     correctRef.current = 0;
     streakRef.current = 0;
     bestStreakRef.current = 0;
+    attemptsRef.current = 0;
+    pointsRef.current = 0;
     questionCounter.current = 0;
+    lightningDeadlineRef.current =
+      nextMode === "lightning" ? Date.now() + LIGHTNING_SECONDS * 1000 : 0;
+    setMode(nextMode);
     setCorrect(0);
     setStreak(0);
     setBestStreak(0);
+    setPoints(0);
     setIndex(0);
     setResult(null);
     setPicked(null);
-    setTimeLeft(10);
+    setTimeLeft(nextMode === "lightning" ? LIGHTNING_SECONDS : 10);
     setQuestion(buildQuestion(drill, 0));
     setPhase("question");
   };
@@ -281,6 +388,7 @@ export function IntervalHunter({
   // Reading sprint clock: ten seconds per note.
   useEffect(() => {
     if (phase !== "question" || !question || question.mode !== "read") return;
+    if (mode !== "normal") return;
     const startedAt = Date.now();
     const timer = window.setInterval(() => {
       const left = Math.max(0, 10 - (Date.now() - startedAt) / 1000);
@@ -293,6 +401,24 @@ export function IntervalHunter({
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, question]);
+
+  // Racha Relámpago: one shared 30-second fuse for the whole run.
+  useEffect(() => {
+    if (mode !== "lightning") return;
+    if (phase === "intro" || phase === "result") return;
+    if (!lightningDeadlineRef.current) return;
+    const tick = () => {
+      const left = Math.max(
+        0,
+        (lightningDeadlineRef.current - Date.now()) / 1000,
+      );
+      setTimeLeft(left);
+      if (left <= 0) finish(true);
+    };
+    const timer = window.setInterval(tick, 100);
+    tick();
+    return () => window.clearInterval(timer);
+  }, [mode, phase, finish]);
 
   const tone =
     question?.mode === "read"
@@ -350,37 +476,94 @@ export function IntervalHunter({
                 </span>
               </>
             )}
-            {drill.intervals.map((interval) => (
-              <span
-                key={interval}
-                className="rounded-full border border-white/[0.055] bg-white/[0.02] px-2 py-1 text-[7px] font-semibold text-faint"
-              >
-                {intervalAnswerLabel(interval)}
-              </span>
-            ))}
+            {drill.intervals.map((interval) => {
+              const mnemonic = MNEMONICS[intervalAnswerLabel(interval)];
+              return (
+                <span
+                  key={interval}
+                  className="rounded-full border px-2 py-1 text-[7px] font-semibold"
+                  style={{
+                    borderColor: `${mnemonic?.color ?? "#38BDF8"}33`,
+                    background: `${mnemonic?.color ?? "#38BDF8"}0f`,
+                    color: mnemonic?.color ?? "#94A3B8",
+                  }}
+                >
+                  {intervalAnswerLabel(interval)}
+                  {mnemonic ? ` · ${mnemonic.mood.split(" · ")[0]}` : ""}
+                </span>
+              );
+            })}
           </div>
+
+          <p className="mt-2 text-[7px] leading-relaxed text-faint">
+            Cada tarjeta trae una mnemotecnia y una canción conocida para
+            reconocer el intervalo de oído.
+          </p>
 
           <button
             type="button"
-            onClick={start}
+            onClick={() => start("normal")}
             className="neu-button neu-button--primary mt-4 w-full rounded-[14px] py-3 text-[11px]"
           >
             <Play size={13} fill="currentColor" />
             Empezar a escuchar
           </button>
+
+          {drill.mode !== "read" && (
+            <button
+              type="button"
+              onClick={() => start("lightning")}
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-[14px] border border-[#F5C15A]/30 bg-[linear-gradient(100deg,rgba(56,189,248,0.14),rgba(245,193,90,0.16))] py-2.5 text-[10.5px] font-bold text-[#FFE7A8] transition-colors hover:border-[#F5C15A]/45"
+            >
+              <Zap size={13} fill="currentColor" />
+              Racha Relámpago · 30 s
+            </button>
+          )}
         </div>
       )}
 
       {(phase === "question" || phase === "feedback") && question && (
         <div className="game-stage relative overflow-hidden rounded-[26px] p-3.5">
+          {mode === "lightning" && (
+            <div className="mb-2.5">
+              <div className="flex items-center justify-between text-[7px] font-bold uppercase tracking-[0.14em]">
+                <span className="flex items-center gap-1 text-[#F5C15A]">
+                  <Zap size={9} fill="currentColor" />
+                  Racha Relámpago
+                </span>
+                <span
+                  className={cn(
+                    "tabular-nums",
+                    timeLeft < 5 ? "text-[#FB7185]" : "text-glow",
+                  )}
+                >
+                  {timeLeft.toFixed(1)}s
+                </span>
+              </div>
+              <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                <span
+                  className="block h-full rounded-full bg-[linear-gradient(90deg,#38BDF8,#F5C15A)] transition-[width] duration-100 ease-linear"
+                  style={{
+                    width: `${Math.max(0, Math.min(100, (timeLeft / LIGHTNING_SECONDS) * 100))}%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-1.5 text-[7px] font-semibold uppercase tracking-[0.16em] text-faint">
               <Music2 size={10} style={{ color: tone }} />
-              Reto {index + 1}/{rounds}
+              {mode === "lightning"
+                ? `Reto ${index + 1}`
+                : `Reto ${index + 1}/${rounds}`}
             </span>
             <div className="flex items-center gap-2 text-[7px] font-semibold uppercase tracking-[0.14em] text-faint">
               {streak > 1 && (
-                <span className="text-[#F5C15A]">racha ×{streak}</span>
+                <span className="text-[#F5C15A]">
+                  racha ×{streak}
+                  {mode === "lightning" && " · ×2"}
+                </span>
               )}
               {question.mode === "read" && phase === "question" && (
                 <span
@@ -398,13 +581,25 @@ export function IntervalHunter({
 
           <div className="mt-3 flex items-center gap-2">
             <span className="font-display text-[28px] leading-none tabular-nums text-ivory">
-              {correct}
+              {mode === "lightning" ? points : correct}
             </span>
             <span className="text-[7px] font-semibold uppercase tracking-[0.16em] text-faint">
-              aciertos
+              {mode === "lightning" ? "puntos" : "aciertos"}
             </span>
+            {mode === "lightning" && (
+              <span className="text-[7px] font-semibold uppercase tracking-[0.12em] text-faint">
+                · {correct} aciertos
+              </span>
+            )}
             <div className="ml-auto w-24">
-              <GameMeter value={(index / rounds) * 100} tone={tone} />
+              <GameMeter
+                value={
+                  mode === "lightning"
+                    ? (timeLeft / LIGHTNING_SECONDS) * 100
+                    : (index / rounds) * 100
+                }
+                tone={tone}
+              />
             </div>
           </div>
 
@@ -472,16 +667,44 @@ export function IntervalHunter({
                 question.choices.length === 2 ? "grid-cols-2" : "grid-cols-2",
               )}
             >
-              {question.choices.map((choice) => (
-                <button
-                  key={choice}
-                  type="button"
-                  onClick={() => submitAnswer(choice)}
-                  className="choice-key rounded-[14px] border border-white/[0.055] px-3 py-3.5 text-[11px] font-semibold text-ivory/90"
-                >
-                  {choice}
-                </button>
-              ))}
+              {question.choices.map((choice) => {
+                const mnemonic = MNEMONICS[choice];
+                return (
+                  <button
+                    key={choice}
+                    type="button"
+                    onClick={() => submitAnswer(choice)}
+                    className="choice-key relative overflow-hidden rounded-[16px] border border-white/[0.06] px-3 py-3 text-left"
+                    style={
+                      mnemonic
+                        ? { borderColor: `${mnemonic.color}2e` }
+                        : undefined
+                    }
+                  >
+                    <span
+                      aria-hidden
+                      className="absolute inset-y-0 left-0 w-[2px]"
+                      style={{ background: mnemonic?.color ?? "#38BDF8" }}
+                    />
+                    <span className="block text-[12px] font-bold leading-tight text-ivory/90">
+                      {choice}
+                    </span>
+                    {mnemonic && (
+                      <>
+                        <span
+                          className="mt-1 block text-[8px] font-semibold"
+                          style={{ color: mnemonic.color }}
+                        >
+                          {mnemonic.mood}
+                        </span>
+                        <span className="mt-0.5 block text-[7px] leading-snug text-faint">
+                          {mnemonic.hint}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           ) : (
             <motion.div
@@ -503,6 +726,15 @@ export function IntervalHunter({
                 >
                   {isCorrect ? "¡Exacto!" : picked ? "Casi" : "Se apagó el reloj"}
                 </span>
+                {mode === "lightning" && isCorrect && (
+                  <motion.span
+                    initial={{ scale: 0.7, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    className="rounded-full border border-[#F5C15A]/35 bg-[#F5C15A]/[0.12] px-2 py-0.5 text-[8px] font-bold text-[#FFE7A8]"
+                  >
+                    {streak >= 2 ? "+200 ×2" : "+100"}
+                  </motion.span>
+                )}
                 <span className="ml-auto text-[8px] font-semibold uppercase tracking-[0.14em] text-faint">
                   {question.correct}
                 </span>
@@ -519,7 +751,9 @@ export function IntervalHunter({
                 onClick={next}
                 className="neu-button neu-button--primary mt-2.5 w-full rounded-[12px] py-2.5 text-[9.5px]"
               >
-                {index + 1 >= rounds ? "Ver resultado" : "Siguiente reto"}
+                {mode === "normal" && index + 1 >= rounds
+                  ? "Ver resultado"
+                  : "Siguiente reto"}
               </button>
             </motion.div>
           )}
@@ -540,7 +774,7 @@ export function IntervalHunter({
       {phase === "result" && result && (
         <GameResultCard
           result={result}
-          onRetry={start}
+          onRetry={() => start(mode)}
           onFinish={onFinish}
           finishLabel={finishLabel}
           xpNote={xpNote}

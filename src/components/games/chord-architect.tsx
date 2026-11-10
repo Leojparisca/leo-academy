@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   AudioLines,
   Hand,
@@ -112,17 +112,31 @@ export function ChordArchitect({
   const [showHint, setShowHint] = useState(false);
   const [fingering, setFingering] = useState(false);
   const [doneSlots, setDoneSlots] = useState<number[]>([]);
+  const [solid, setSolid] = useState<{ id: number } | null>(null);
 
   const counter = useRef(0);
   const correctRef = useRef(0);
   const streakRef = useRef(0);
   const bestStreakRef = useRef(0);
   const playTimers = useRef<number[]>([]);
+  const solidTimer = useRef<number | null>(null);
+  const autoSealRef = useRef(false);
+  // Mirror of `selected` so two fast taps in the same frame can never drop a
+  // note from the pending chord.
+  const selectedRef = useRef<number[]>([]);
   const finishedRef = useRef(false);
 
   const clearPlayTimers = useCallback(() => {
     playTimers.current.forEach((timer) => window.clearTimeout(timer));
     playTimers.current = [];
+    if (solidTimer.current) window.clearTimeout(solidTimer.current);
+    solidTimer.current = null;
+  }, []);
+
+  /** Keeps the ref and the rendered state in step, in that order. */
+  const commitSelection = useCallback((next: number[]) => {
+    selectedRef.current = next;
+    setSelected(next);
   }, []);
 
   useEffect(() => clearPlayTimers, [clearPlayTimers]);
@@ -150,6 +164,27 @@ export function ChordArchitect({
       playTimers.current.push(timer);
     });
   }, [audio, clearPlayTimers, progression]);
+
+  /**
+   * The ear reward: the finished chord blooms as a spaced arpeggio with extra
+   * reverb, and a golden banner confirms the win.
+   */
+  const celebrate = useCallback(
+    (rootPc: number, quality: ChordQuality) => {
+      const chord = chordMidis(rootPc, CHORD_QUALITIES[quality].intervals, 4);
+      audio.unlock();
+      audio.playArpeggio([...chord, chord[0] + 12], {
+        step: 0.085,
+        duration: 2.3,
+        velocity: 0.68,
+        wet: 0.62,
+      });
+      setSolid({ id: Date.now() });
+      if (solidTimer.current) window.clearTimeout(solidTimer.current);
+      solidTimer.current = window.setTimeout(() => setSolid(null), 2400);
+    },
+    [audio],
+  );
 
   const finish = useCallback(() => {
     if (finishedRef.current) return;
@@ -217,12 +252,14 @@ export function ChordArchitect({
     setStreak(0);
     setBestStreak(0);
     setIndex(0);
-    setSelected([]);
+    commitSelection([]);
     setPickedEmotion(null);
     setIsCorrect(false);
     setDoneSlots([]);
     setResult(null);
     setShowHint(false);
+    setSolid(null);
+    autoSealRef.current = false;
     const first = makeChallenge(0);
     setChallenge(first);
     setPhase("question");
@@ -236,7 +273,7 @@ export function ChordArchitect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   };
 
-  const register = (right: boolean) => {
+  const register = (right: boolean, options: { reward?: boolean } = {}) => {
     setIsCorrect(right);
     if (right) {
       correctRef.current += 1;
@@ -250,13 +287,19 @@ export function ChordArchitect({
       setStreak(0);
     }
     setPhase("feedback");
-    if (challenge) playChordFor(challenge.rootPc, challenge.quality);
+    if (!challenge) return;
+    if (!right) {
+      playChordFor(challenge.rootPc, challenge.quality);
+      return;
+    }
+    // Correct: the arpeggio replaces the block chord, unless it already rang.
+    if (!options.reward) celebrate(challenge.rootPc, challenge.quality);
   };
 
   const seal = () => {
-    if (!challenge || phase !== "question") return;
+    if (!challenge || phase !== "question" || autoSealRef.current) return;
     const target = [...challenge.targetPcs].sort((a, b) => a - b);
-    const chosen = [...new Set(selected)].sort((a, b) => a - b);
+    const chosen = [...new Set(selectedRef.current)].sort((a, b) => a - b);
     const right =
       target.length === chosen.length &&
       target.every((pc, position) => pc === chosen[position]);
@@ -271,6 +314,8 @@ export function ChordArchitect({
 
   const next = () => {
     if (!challenge) return;
+    autoSealRef.current = false;
+    setSolid(null);
     if (index + 1 >= rounds) {
       if (isProgression) {
         playProgression();
@@ -282,7 +327,7 @@ export function ChordArchitect({
     }
     const nextIndex = index + 1;
     setIndex(nextIndex);
-    setSelected([]);
+    commitSelection([]);
     setPickedEmotion(null);
     setIsCorrect(false);
     setShowHint(false);
@@ -301,11 +346,33 @@ export function ChordArchitect({
   };
 
   const togglePc = (pc: number) => {
-    setSelected((previous) => {
-      if (previous.includes(pc)) return previous.filter((item) => item !== pc);
-      if (previous.length >= 4) return previous;
-      return [...previous, pc];
-    });
+    if (!challenge || phase !== "question" || autoSealRef.current) return;
+    const target = [...challenge.targetPcs].sort((a, b) => a - b);
+    const current = selectedRef.current;
+    let draft: number[];
+    if (current.includes(pc)) {
+      draft = current.filter((item) => item !== pc);
+    } else {
+      if (current.length >= 4) return;
+      draft = [...current, pc];
+    }
+    commitSelection(draft);
+
+    const chosen = [...new Set(draft)].sort((a, b) => a - b);
+    const exact =
+      chosen.length === target.length &&
+      target.every((value, position) => value === chosen[position]);
+
+    if (!exact) return;
+
+    // Chord completed: celebrate right away, then seal it on the same breath.
+    autoSealRef.current = true;
+    celebrate(challenge.rootPc, challenge.quality);
+    const timer = window.setTimeout(
+      () => register(true, { reward: true }),
+      540,
+    );
+    playTimers.current.push(timer);
   };
 
   const meta = challenge ? CHORD_QUALITIES[challenge.quality] : null;
@@ -363,6 +430,17 @@ export function ChordArchitect({
             </div>
           </div>
 
+          <div className="mt-2 flex items-start gap-2 rounded-[12px] border border-[#F5C15A]/15 bg-[#F5C15A]/[0.05] px-2.5 py-2">
+            <Sparkles
+              size={11}
+              className="mt-0.5 flex-none text-[#F5C15A]"
+            />
+            <p className="text-[7.5px] leading-relaxed text-muted">
+              Cierra la forma (tónica · 3ª · 5ª) y el acorde se abrirá solo en un
+              arpegio con reverb espacial.
+            </p>
+          </div>
+
           <button
             type="button"
             onClick={start}
@@ -376,14 +454,50 @@ export function ChordArchitect({
 
       {(phase === "question" || phase === "feedback") && challenge && meta && (
         <div className="game-stage relative overflow-hidden rounded-[26px] p-3.5">
+          <AnimatePresence>
+            {solid && (
+              <motion.div
+                key={solid.id}
+                initial={{ opacity: 0, scale: 0.7, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                transition={{ type: "spring", stiffness: 320, damping: 22 }}
+                className="pointer-events-none absolute inset-0 z-30 grid place-items-center px-4"
+              >
+                <span className="relative overflow-hidden rounded-[18px] border border-[#F5C15A]/45 bg-[#0A0F18]/95 px-6 py-3.5 text-center shadow-[0_0_54px_rgba(245,193,90,0.35)] backdrop-blur">
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 bg-[linear-gradient(110deg,transparent_20%,rgba(255,231,168,0.22)_45%,transparent_70%)]"
+                  />
+                  <span className="relative block font-display text-[21px] leading-none text-[#FFE7A8]">
+                    ¡Acorde Sólido!
+                  </span>
+                  <span className="relative mt-1.5 block text-[7.5px] font-bold uppercase tracking-[0.22em] text-[#F5C15A]/85">
+                    Arpegio · +1 racha
+                  </span>
+                </span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-1.5 text-[7px] font-semibold uppercase tracking-[0.16em] text-faint">
               <Sparkles size={10} style={{ color: accent }} />
               {isProgression ? "Enlace" : "Reto"} {index + 1}/{rounds}
             </span>
-            <span className="text-[7px] font-semibold uppercase tracking-[0.14em] text-faint">
+            <motion.span
+              key={streak}
+              initial={{ scale: 0.85, opacity: 0.7 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className={cn(
+                "rounded-full border px-2 py-0.5 text-[7px] font-bold uppercase tracking-[0.14em]",
+                streak > 1
+                  ? "border-[#F5C15A]/40 bg-[#F5C15A]/[0.12] text-[#FFE7A8] shadow-[0_0_16px_rgba(245,193,90,0.4)]"
+                  : "border-white/[0.06] bg-white/[0.02] text-faint",
+              )}
+            >
               {streak > 1 ? `racha ×${streak}` : `${correct} aciertos`}
-            </span>
+            </motion.span>
           </div>
 
           {isProgression ? (
