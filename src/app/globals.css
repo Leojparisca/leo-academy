@@ -1344,6 +1344,142 @@ html[data-unplugged="true"] .bottom-nav {
     0 0 14px rgba(245, 193, 90, 0.3);
 }
 
+/* --------------------------------------------------------------------------
+   Cascada Zafiro — concert keys, obsidian glass and thread glow
+   -------------------------------------------------------------------------- */
+.cascada-key {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  padding: 0;
+  border-radius: 4px 4px 9px 9px;
+  border: 2px solid rgba(8, 14, 24, 0.68);
+  border-top-width: 3px;
+  background: linear-gradient(180deg, #fffdf7 0%, #f7f3e9 46%, #eae4d5 80%, #d7d0bf 100%);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -12px 16px -10px rgba(20, 30, 50, 0.24),
+    0 3px 5px -2px rgba(0, 0, 0, 0.7);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition:
+    background 70ms ease-out,
+    box-shadow 90ms ease-out,
+    transform 60ms ease-out;
+}
+
+.cascada-key[data-hint="true"] {
+  box-shadow:
+    inset 0 0 0 1.5px rgba(56, 189, 248, 0.4),
+    inset 0 -20px 24px -14px rgba(56, 189, 248, 0.42),
+    0 3px 5px -2px rgba(0, 0, 0, 0.7);
+}
+
+.cascada-key[data-active="true"] {
+  background: linear-gradient(180deg, #ffffff 0%, #eaf9ff 34%, #bfe9ff 70%, #8fd4ff 100%);
+  box-shadow:
+    inset 0 -22px 26px -16px rgba(13, 110, 253, 0.62),
+    inset 0 0 0 2px rgba(56, 189, 248, 0.62),
+    0 0 22px rgba(56, 189, 248, 0.48);
+  transform: translateY(2px);
+}
+
+.cascada-key--black {
+  z-index: 3;
+  height: 62%;
+  border-radius: 2px 2px 7px 7px;
+  border-color: rgba(0, 0, 0, 0.95);
+  border-top-width: 2px;
+  background: linear-gradient(180deg, #2c3646 0%, #151d2a 14%, #0a1018 48%, #03060b 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(190, 230, 255, 0.24),
+    inset -1px 0 0 rgba(0, 0, 0, 0.85),
+    0 5px 7px -2px rgba(0, 0, 0, 0.75);
+}
+
+.cascada-key--black[data-hint="true"] {
+  box-shadow:
+    inset 0 0 0 1.5px rgba(56, 189, 248, 0.4),
+    inset 0 -30px 24px -18px rgba(56, 189, 248, 0.38),
+    0 5px 7px -2px rgba(0, 0, 0, 0.75);
+}
+
+.cascada-key--black[data-active="true"] {
+  background: linear-gradient(180deg, #2e5a7c 0%, #123a58 42%, #05192a 82%, #01070d 100%);
+  box-shadow:
+    inset 0 -18px 22px -14px rgba(56, 189, 248, 0.58),
+    inset 0 0 0 2px rgba(56, 189, 248, 0.52),
+    0 0 20px rgba(56, 189, 248, 0.4);
+  transform: translateY(1px);
+}
+
+.cascada-key-label {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: rgba(51, 65, 85, 0.5);
+  pointer-events: none;
+}
+
+.cascada-key--black .cascada-key-label {
+  display: none;
+}
+
+.cascada-glass {
+  background:
+    radial-gradient(120% 100% at 50% 0%, rgba(56, 189, 248, 0.1), transparent 62%),
+    rgba(4, 6, 11, 0.93);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+
+.cascada-phone {
+  animation: cascada-rotate-phone 2.8s ease-in-out infinite;
+}
+
+@keyframes cascada-rotate-phone {
+  0%,
+  16% {
+    transform: rotate(0deg);
+  }
+  46%,
+  74% {
+    transform: rotate(-90deg);
+  }
+  100% {
+    transform: rotate(-90deg);
+  }
+}
+
+.cascada-shake {
+  animation: cascada-shake 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+@keyframes cascada-shake {
+  10%,
+  90% {
+    transform: translate3d(-2px, 0, 0);
+  }
+  20%,
+  80% {
+    transform: translate3d(3px, 0, 0);
+  }
+  30%,
+  50%,
+  70% {
+    transform: translate3d(-5px, 1px, 0);
+  }
+  40%,
+  60% {
+    transform: translate3d(5px, -1px, 0);
+  }
+}
+
 .contour-pad {
   background:
     radial-gradient(80% 100% at 50% 0%, rgba(56, 189, 248, 0.08), transparent 68%),

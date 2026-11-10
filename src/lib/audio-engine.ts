@@ -164,6 +164,10 @@ class AudioEngine {
   private silent = false;
   private hasPlayed = false;
   private silenceTimer: number | null = null;
+  private padGain: GainNode | null = null;
+  private padOscillators: OscillatorNode[] = [];
+  private padNodes: AudioNode[] = [];
+  private padCleanup: number | null = null;
 
   /** Stable identity for useSyncExternalStore. */
   getReady = () => this.ready;
@@ -638,6 +642,7 @@ class AudioEngine {
     for (const voice of [...this.voices.values()]) {
       this.killVoice(voice, 0.05);
     }
+    this.stopPad(0.14);
   }
 
   forceNoteOff(midi: number) {
@@ -688,6 +693,181 @@ class AudioEngine {
         Math.max(80, (start - origin + duration) * 1000),
       );
     });
+  }
+
+  /**
+   * Harmonic string pad for high combos. Crossfades between chords instead of
+   * stacking: the previous pad is faded out first, so long sessions never
+   * accumulate oscillators.
+   */
+  startPad(
+    midis: number[],
+    { volume = 0.05, fade = 1.4 }: { volume?: number; fade?: number } = {},
+  ) {
+    const context = this.ensureContext();
+    if (!context || !this.input || !this.reverbSend) return;
+    this.stopPad(Math.min(0.4, fade * 0.4));
+    this.hasPlayed = true;
+    if (context.state !== "running") void context.resume().catch(() => undefined);
+
+    const now = context.currentTime;
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(volume, now + fade);
+
+    const filter = context.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(760, now);
+    filter.frequency.linearRampToValueAtTime(1650, now + fade);
+    filter.Q.value = 0.35;
+
+    const send = context.createGain();
+    send.gain.value = 0.55;
+
+    filter.connect(gain);
+    gain.connect(this.input);
+    gain.connect(send);
+    send.connect(this.reverbSend);
+
+    const oscillators: OscillatorNode[] = [];
+    const nodes: AudioNode[] = [gain, filter, send];
+
+    for (const midi of midis) {
+      const base = 440 * Math.pow(2, (midi - 69) / 12);
+      for (const [ratio, detune, type, level] of [
+        [1, -5, "triangle", 1],
+        [1, 5, "sine", 0.7],
+        [2, 0, "sine", 0.16],
+      ] as const) {
+        const oscillator = context.createOscillator();
+        oscillator.type = type;
+        oscillator.frequency.value = base * ratio;
+        oscillator.detune.value = detune;
+        const voiceGain = context.createGain();
+        voiceGain.gain.value = level;
+        oscillator.connect(voiceGain);
+        voiceGain.connect(filter);
+        oscillator.start(now);
+        oscillators.push(oscillator);
+        nodes.push(voiceGain);
+      }
+    }
+
+    this.padGain = gain;
+    this.padOscillators = oscillators;
+    this.padNodes = nodes;
+    this.scheduleSilenceCheck(420);
+  }
+
+  stopPad(fade = 0.6) {
+    const context = this.context;
+    const gain = this.padGain;
+    const oscillators = this.padOscillators;
+    const nodes = this.padNodes;
+    this.padGain = null;
+    this.padOscillators = [];
+    this.padNodes = [];
+    if (this.padCleanup !== null) {
+      window.clearTimeout(this.padCleanup);
+      this.padCleanup = null;
+    }
+    if (!context || !gain) {
+      for (const node of nodes) {
+        try {
+          node.disconnect();
+        } catch {
+          /* Already disconnected. */
+        }
+      }
+      return;
+    }
+    const now = context.currentTime;
+    const release = Math.max(0.08, fade);
+    try {
+      gain.gain.cancelAndHoldAtTime(now);
+    } catch {
+      gain.gain.cancelScheduledValues(now);
+    }
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + release);
+    for (const oscillator of oscillators) {
+      try {
+        oscillator.stop(now + release + 0.05);
+      } catch {
+        /* Already stopped. */
+      }
+    }
+    this.padCleanup = window.setTimeout(() => {
+      this.padCleanup = null;
+      for (const node of nodes) {
+        try {
+          node.disconnect();
+        } catch {
+          /* Already disconnected. */
+        }
+      }
+    }, (release + 0.2) * 1000);
+  }
+
+  /** Sapphire crystal shattering: bright glass shards over a soft low thud. */
+  playShatter() {
+    const context = this.ensureContext();
+    if (!context) return;
+    this.hasPlayed = true;
+    if (context.state !== "running") void context.resume().catch(() => undefined);
+    this.scheduleSilenceCheck(700);
+    const start = context.currentTime;
+
+    if (this.noise) {
+      const noise = context.createBufferSource();
+      noise.buffer = this.noise;
+      const high = context.createBiquadFilter();
+      high.type = "highpass";
+      high.frequency.setValueAtTime(2600, start);
+      high.frequency.exponentialRampToValueAtTime(820, start + 0.45);
+      high.Q.value = 0.7;
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.34, start);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.52);
+      noise.connect(high);
+      high.connect(gain);
+      this.routeExtra(gain, 0.4);
+      noise.start(start);
+      noise.stop(start + 0.55);
+    }
+
+    // Inharmonic glass partials: each shard falls a little as it dies.
+    for (const [index, frequency] of [2480, 3180, 4090, 5230].entries()) {
+      const shard = context.createOscillator();
+      shard.type = "sine";
+      shard.frequency.setValueAtTime(frequency, start + index * 0.014);
+      shard.frequency.exponentialRampToValueAtTime(
+        frequency * 0.72,
+        start + 0.26 + index * 0.03,
+      );
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, start + index * 0.014);
+      gain.gain.linearRampToValueAtTime(0.11 - index * 0.018, start + index * 0.014 + 0.004);
+      gain.gain.exponentialRampToValueAtTime(
+        0.0001,
+        start + 0.3 + index * 0.04,
+      );
+      shard.connect(gain);
+      this.routeExtra(gain, 0.5);
+      shard.start(start + index * 0.014);
+      shard.stop(start + 0.44 + index * 0.04);
+    }
+
+    const thud = context.createOscillator();
+    thud.type = "sine";
+    thud.frequency.setValueAtTime(132, start);
+    thud.frequency.exponentialRampToValueAtTime(58, start + 0.16);
+    const thudGain = context.createGain();
+    thudGain.gain.setValueAtTime(0.3, start);
+    thudGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.26);
+    thud.connect(thudGain);
+    this.routeExtra(thudGain, 0.12);
+    thud.start(start);
+    thud.stop(start + 0.3);
   }
 
   private routeExtra(node: AudioNode, wet = 0.3) {

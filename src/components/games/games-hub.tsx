@@ -4,23 +4,31 @@ import { motion } from "framer-motion";
 import {
   AudioLines,
   Gamepad2,
+  Gem,
   Piano,
   Star,
   Target,
+  Trophy,
   Waves,
   Zap,
   type LucideIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAcademy } from "@/components/providers/academy-provider";
+import { CascadaZafiro } from "@/components/games/cascada-zafiro";
 import { ChordArchitect } from "@/components/games/chord-architect";
 import { GroovePadDual } from "@/components/games/groove-pad-dual";
 import { GroupClass } from "@/components/games/group-class";
 import { IntervalHunter } from "@/components/games/interval-hunter";
 import type { Skill } from "@/lib/academy";
+import {
+  readBestRecord,
+  subscribeGameRecords,
+  type GameRecord,
+} from "@/lib/game-records";
 import { cn } from "@/lib/utils";
 
-type GameId = "ritmo" | "melodia" | "armonia";
+type GameId = "ritmo" | "melodia" | "armonia" | "cascada";
 
 const GAMES: Array<{
   id: GameId;
@@ -29,6 +37,7 @@ const GAMES: Array<{
   icon: LucideIcon;
   skill: Skill;
   color: string;
+  tag?: string;
 }> = [
   {
     id: "ritmo",
@@ -54,11 +63,21 @@ const GAMES: Array<{
     skill: "harmony",
     color: "#9DB5FF",
   },
+  {
+    id: "cascada",
+    title: "Cascada Zafiro",
+    subtitle: "Modo Arcade · Pantalla Completa",
+    icon: Gem,
+    skill: "harmony",
+    color: "#F5C15A",
+    tag: "NUEVO",
+  },
 ];
 
 export function GamesHub() {
   const [tab, setTab] = useState<GameId>("ritmo");
   const { activeStudent, skillScores, xpByStudent } = useAcademy();
+  const [cascadeRecord, setCascadeRecord] = useState<GameRecord | null>(null);
 
   const bestBySkill = useMemo(() => {
     const best: Record<string, number> = {};
@@ -68,6 +87,17 @@ export function GamesHub() {
     }
     return best;
   }, [skillScores]);
+
+  useEffect(() => {
+    if (!activeStudent) {
+      setCascadeRecord(null);
+      return;
+    }
+    const sync = () =>
+      setCascadeRecord(readBestRecord(activeStudent.id, "cascada-zafiro"));
+    sync();
+    return subscribeGameRecords(sync);
+  }, [activeStudent]);
 
   const xp = activeStudent ? (xpByStudent[activeStudent.id] ?? 0) : 0;
   const accuracy = activeStudent?.accuracy ?? 0;
@@ -152,15 +182,33 @@ export function GamesHub() {
               </span>
 
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[15px] font-bold leading-tight text-white">
-                  {game.title}
+                <span className="flex items-center gap-1.5">
+                  <span className="block truncate text-[15px] font-bold leading-tight text-white">
+                    {game.title}
+                  </span>
+                  {game.tag && (
+                    <span className="flex-none rounded-full bg-[#F5C15A]/15 px-1.5 py-0.5 text-[6.5px] font-bold uppercase tracking-[0.12em] text-[#F5C15A] shadow-[0_0_10px_rgba(245,193,90,0.25)]">
+                      {game.tag}
+                    </span>
+                  )}
                 </span>
                 <span className="mt-0.5 block truncate text-[11px] text-slate-300">
                   {game.subtitle}
                 </span>
                 <span className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-[#F5C15A]/15 px-2 py-0.5 text-[10px] font-bold text-[#F5C15A]">
-                  <Star size={9} fill="currentColor" />
-                  {best > 0 ? `${best}%` : "Sin récord"}
+                  {game.id === "cascada" ? (
+                    <>
+                      <Trophy size={9} />
+                      {cascadeRecord
+                        ? `${cascadeRecord.score.toLocaleString("es")} pts`
+                        : "Sin récord"}
+                    </>
+                  ) : (
+                    <>
+                      <Star size={9} fill="currentColor" />
+                      {best > 0 ? `${best}%` : "Sin récord"}
+                    </>
+                  )}
                 </span>
               </span>
 
@@ -189,6 +237,7 @@ export function GamesHub() {
           {tab === "ritmo" && <GroovePadDual />}
           {tab === "melodia" && <IntervalHunter />}
           {tab === "armonia" && <ChordArchitect />}
+          {tab === "cascada" && <CascadaZafiro />}
         </motion.div>
       </section>
 

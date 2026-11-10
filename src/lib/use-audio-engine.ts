@@ -88,6 +88,18 @@ export function useAudioEngine() {
     [engine],
   );
   const releaseAll = useCallback(() => engine.releaseAll(), [engine]);
+  const startPad = useCallback(
+    (
+      midis: number[],
+      options?: { volume?: number; fade?: number },
+    ) => engine.startPad(midis, options),
+    [engine],
+  );
+  const stopPad = useCallback(
+    (fade?: number) => engine.stopPad(fade),
+    [engine],
+  );
+  const playShatter = useCallback(() => engine.playShatter(), [engine]);
   const now = useCallback(() => engine.now(), [engine]);
 
   // A stable facade: keyboard effects depend on this object, so returning a
@@ -110,6 +122,9 @@ export function useAudioEngine() {
       setVolume,
       setPreset,
       releaseAll,
+      startPad,
+      stopPad,
+      playShatter,
       now,
     }),
     [
@@ -129,6 +144,9 @@ export function useAudioEngine() {
       setVolume,
       setPreset,
       releaseAll,
+      startPad,
+      stopPad,
+      playShatter,
       now,
     ],
   );
