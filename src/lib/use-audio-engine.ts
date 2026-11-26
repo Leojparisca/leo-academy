@@ -9,9 +9,16 @@ import {
 } from "react";
 import {
   getAudioEngine,
+  type AudioLatency,
   type EnginePreset,
   type PercussionKind,
 } from "@/lib/audio-engine";
+
+const ZERO_LATENCY: AudioLatency = {
+  baseLatency: 0,
+  outputLatency: 0,
+  total: 0,
+};
 
 /**
  * React bridge to the shared Sapphire Acoustic Engine. The engine is a lazy
@@ -31,10 +38,15 @@ export function useAudioEngine() {
     () => false,
   );
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
+  const [latency, setLatency] = useState<AudioLatency>(ZERO_LATENCY);
 
   useEffect(() => {
     setAnalyser(engine.getAnalyser());
+    setLatency(engine.getLatency());
   }, [engine, ready]);
+
+  // First real gesture unlocks the route; returning to the tab re-arms it.
+  useEffect(() => engine.installUnlockHandlers(), [engine]);
 
   const unlock = useCallback(() => engine.unlock(), [engine]);
   const noteOn = useCallback(
@@ -101,6 +113,7 @@ export function useAudioEngine() {
   );
   const playShatter = useCallback(() => engine.playShatter(), [engine]);
   const now = useCallback(() => engine.now(), [engine]);
+  const getLatency = useCallback(() => engine.getLatency(), [engine]);
 
   // A stable facade: keyboard effects depend on this object, so returning a
   // fresh literal on every render would re-run them (and could loop).
@@ -110,6 +123,7 @@ export function useAudioEngine() {
       ready,
       silent,
       analyser,
+      latency,
       unlock,
       noteOn,
       noteOff,
@@ -126,12 +140,14 @@ export function useAudioEngine() {
       stopPad,
       playShatter,
       now,
+      getLatency,
     }),
     [
       engine,
       ready,
       silent,
       analyser,
+      latency,
       unlock,
       noteOn,
       noteOff,
@@ -148,6 +164,7 @@ export function useAudioEngine() {
       stopPad,
       playShatter,
       now,
+      getLatency,
     ],
   );
 }

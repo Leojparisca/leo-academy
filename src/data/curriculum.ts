@@ -915,8 +915,12 @@ export const CURRICULUM_BY_ID = new Map(
   CURRICULUM_NODES.map((entry) => [entry.id, entry]),
 );
 
-export function getCurriculumNode(nodeId: string) {
-  return CURRICULUM_BY_ID.get(nodeId) ?? CURRICULUM_NODES[0];
+/**
+ * Looks up a curated node. Unknown ids return `null`: silently falling back to
+ * the first node would seal progress on a lesson the student never played.
+ */
+export function getCurriculumNode(nodeId: string): CurriculumNode | null {
+  return CURRICULUM_BY_ID.get(nodeId) ?? null;
 }
 
 export function nodesForLevel(level: number) {

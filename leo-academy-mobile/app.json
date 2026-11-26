@@ -1,0 +1,3 @@
+{
+  "expo": { "name": "Leo Academy", "slug": "leo-academy-mobile", "scheme": "leoacademy", "version": "1.0.0", "orientation": "default", "userInterfaceStyle": "dark", "plugins": ["expo-router", "expo-secure-store", "expo-sqlite", "expo-screen-orientation"], "experiments": { "typedRoutes": true } }
+}

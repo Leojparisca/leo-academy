@@ -14,6 +14,18 @@
 export type EnginePreset = "rhodes" | "grand" | "glass";
 export type PercussionKind = "kick" | "snare" | "hat" | "woodblock" | "click";
 
+/**
+ * Route latency declared by the browser, in seconds. `baseLatency` is the
+ * render quantum; `outputLatency` is the path from the graph to the speakers.
+ * Safari reports `outputLatency` as `undefined` on some versions, in which case
+ * `getLatency()` estimates it from `getOutputTimestamp()`.
+ */
+export type AudioLatency = {
+  baseLatency: number;
+  outputLatency: number;
+  total: number;
+};
+
 type Partial = { ratio: number; gain: number };
 
 type Preset = {
@@ -168,6 +180,8 @@ class AudioEngine {
   private padOscillators: OscillatorNode[] = [];
   private padNodes: AudioNode[] = [];
   private padCleanup: number | null = null;
+  private unlockInstalled = false;
+  private unlockTeardown: (() => void) | null = null;
 
   /** Stable identity for useSyncExternalStore. */
   getReady = () => this.ready;
@@ -235,8 +249,118 @@ class AudioEngine {
     return this.analyser;
   }
 
+  /**
+   * Audio clock in seconds. Safe to call before any context exists: callers get
+   * `0` (a finite, non-negative number) instead of throwing, so scheduling
+   * maths never produces `NaN` on a device where Web Audio is unavailable.
+   */
   now() {
-    return this.context?.currentTime ?? 0;
+    const time = this.context?.currentTime;
+    return typeof time === "number" && Number.isFinite(time)
+      ? Math.max(0, time)
+      : 0;
+  }
+
+  /**
+   * Latency the browser declares for the current route. Calibration measures
+   * taps against this same clock, so its offset already contains the route
+   * delay; this value is the fallback for a device that was never calibrated
+   * and the signal used to warn about Bluetooth.
+   */
+  getLatency(): AudioLatency {
+    const context = this.context;
+    if (!context) return { baseLatency: 0, outputLatency: 0, total: 0 };
+
+    const base =
+      typeof context.baseLatency === "number" &&
+      Number.isFinite(context.baseLatency)
+        ? Math.max(0, context.baseLatency)
+        : 0;
+
+    const reported = (context as AudioContext & { outputLatency?: number })
+      .outputLatency;
+    let output =
+      typeof reported === "number" && Number.isFinite(reported)
+        ? Math.max(0, reported)
+        : 0;
+
+    // Safari sometimes leaves `outputLatency` undefined or 0. The distance
+    // between the clock being rendered and the frame being heard is a good
+    // estimate of the real route latency.
+    if (output === 0) {
+      try {
+        const stamp = context.getOutputTimestamp?.();
+        const contextTime = stamp?.contextTime;
+        if (
+          typeof contextTime === "number" &&
+          contextTime > 0 &&
+          context.currentTime > contextTime
+        ) {
+          output = clamp(context.currentTime - contextTime, 0, 0.5);
+        }
+      } catch {
+        /* Not supported: keep the declared value. */
+      }
+    }
+
+    return { baseLatency: base, outputLatency: output, total: base + output };
+  }
+
+  /** Re-measures silence on demand (used when the tab becomes visible). */
+  probeSilence() {
+    this.scheduleSilenceCheck(0);
+  }
+
+  /**
+   * Unlocks the audio route on the first real gesture and re-arms it whenever
+   * the tab comes back. iOS suspends the context after a call or a long
+   * background stay and only a gesture can resume it; the listeners are
+   * removed on unmount, so StrictMode's double mount is safe.
+   */
+  installUnlockHandlers(): () => void {
+    if (typeof window === "undefined") return () => undefined;
+    if (this.unlockInstalled) return this.unlockTeardown ?? (() => undefined);
+
+    const onGesture = () => {
+      const context = this.context;
+      if (context && context.state === "running") return;
+      this.unlock();
+    };
+
+    const onVisibility = () => {
+      if (typeof document === "undefined") return;
+      if (document.visibilityState !== "visible") return;
+      const context = this.context;
+      if (!context) return;
+      if (context.state !== "running") {
+        this.unlock();
+        return;
+      }
+      if (this.hasPlayed) this.scheduleSilenceCheck(320);
+    };
+
+    const gestures: Array<keyof WindowEventMap> = [
+      "pointerdown",
+      "touchend",
+      "keydown",
+    ];
+    for (const type of gestures) {
+      window.addEventListener(type, onGesture, { passive: true, capture: true });
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+
+    const teardown = () => {
+      for (const type of gestures) {
+        window.removeEventListener(type, onGesture, { capture: true });
+      }
+      document.removeEventListener("visibilitychange", onVisibility);
+      this.unlockInstalled = false;
+      this.unlockTeardown = null;
+    };
+
+    this.unlockInstalled = true;
+    this.unlockTeardown = teardown;
+    return teardown;
   }
 
   private volumeToGain(percent: number) {

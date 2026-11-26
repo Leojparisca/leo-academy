@@ -18,6 +18,7 @@ import {
   skillScores,
   students,
 } from "@/server/db/schema";
+import { scoreRowId } from "@/lib/sync-keys";
 
 const TABS = ["mapa", "estudio", "juegos", "profesor"] as const;
 
@@ -155,7 +156,9 @@ export async function syncLiveProgressAction(
         await tx
           .insert(skillScores)
           .values({
-            id: `live_${payload.clientId}`,
+            // Same canonical id as `persistPractice` and the device backup:
+            // one completed exercise produces exactly one score row.
+            id: scoreRowId(payload.clientId),
             studentId: payload.studentId,
             skill: payload.skill,
             score: payload[payload.skill],

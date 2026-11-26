@@ -4,12 +4,22 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Check, Hand, Headphones, Play } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { starsForAccuracy, type RhythmDrill } from "@/data/curriculum";
+import {
+  CALIBRATION_CLICKS,
+  readStoredRhythmCalibration,
+  rhythmCompensation,
+  useRhythmCalibration,
+} from "@/lib/use-rhythm-calibration";
 import { useAudioEngine } from "@/lib/use-audio-engine";
 import { cn } from "@/lib/utils";
 
 const BARS = 4;
-/** Generous mobile-friendly tolerance: ±150 ms around every expected hit. */
-const TOLERANCE = 0.15;
+/**
+ * Asymmetric window: the residual bias after calibration is still late on
+ * mobile and Bluetooth, so the late side keeps more margin than the early one.
+ */
+const EARLY_WINDOW = 0.11;
+const LATE_WINDOW = 0.19;
 
 type Phase = "idle" | "countin" | "listen" | "play";
 type ExpectedHit = { time: number; judged: boolean };
@@ -30,6 +40,20 @@ export function RhythmCallResponse({
   const audio = useAudioEngine();
   const audioRef = useRef(audio);
   audioRef.current = audio;
+
+  const calibration = useRhythmCalibration({ bpm: drill.bpm });
+  const calibrationRef = useRef(calibration);
+  calibrationRef.current = calibration;
+
+  const compensation = useMemo(
+    () => rhythmCompensation(calibration.stored, calibration.latency),
+    [calibration.stored, calibration.latency],
+  );
+  const compensationRef = useRef(compensation);
+  compensationRef.current = compensation;
+
+  const practiceRef = useRef(calibration.practiceMode);
+  practiceRef.current = calibration.practiceMode;
 
   const spb = 60 / drill.bpm;
 
@@ -86,6 +110,28 @@ export function RhythmCallResponse({
 
   const finishBar = (index: number) => {
     if (completedRef.current) return;
+
+    // Practice mode: no grade, no retry loop. The bar simply moves on so the
+    // student keeps the pulse without being judged by a device we could not
+    // measure.
+    if (practiceRef.current) {
+      setLit((previous) => {
+        const next = [...previous];
+        next[index] = true;
+        return next;
+      });
+      if (index === BARS - 1) {
+        completedRef.current = true;
+        clearTimers();
+        setPhase("idle");
+        phaseRef.current = "idle";
+        showFeedback("Práctica completada · sin nota", "soft");
+        return;
+      }
+      showFeedback("Sigue el pulso", "soft");
+      after(900, () => runBarRef.current(index + 1));
+      return;
+    }
 
     const expected = expectedRef.current;
     const total = Math.max(1, expected.length);
@@ -212,26 +258,40 @@ export function RhythmCallResponse({
     audioRef.current.playPercussion("woodblock");
     setTapFlash((value) => value + 1);
 
+    if (practiceRef.current) {
+      showFeedback("Práctica: sigue el pulso", "soft");
+      return;
+    }
+
     const now = audioRef.current.now();
+    // Remove the device's systematic lateness before judging. The calibrated
+    // offset already contains the route latency; the browser's declared value
+    // is only used when this device was never calibrated.
+    const adjusted = now - compensationRef.current.seconds;
     let best: ExpectedHit | null = null;
-    let bestDelta = Number.POSITIVE_INFINITY;
+    let bestDelta = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
     for (const hit of expectedRef.current) {
       if (hit.judged) continue;
-      const delta = Math.abs(hit.time - now);
-      if (delta <= TOLERANCE && delta < bestDelta) {
+      const delta = adjusted - hit.time;
+      if (delta < -EARLY_WINDOW || delta > LATE_WINDOW) continue;
+      const distance = Math.abs(delta);
+      if (distance < bestDistance) {
         best = hit;
         bestDelta = delta;
+        bestDistance = distance;
       }
     }
 
     if (!best) return;
     best.judged = true;
-    qualityRef.current += 100 - (bestDelta / TOLERANCE) * 30;
+    const window = bestDelta < 0 ? EARLY_WINDOW : LATE_WINDOW;
+    qualityRef.current += 100 - Math.min(1, bestDistance / window) * 30;
 
     showFeedback(
-      bestDelta < 0.06
+      bestDistance < 0.06
         ? "¡Perfecto!"
-        : bestDelta < 0.11
+        : bestDistance < 0.12
           ? "¡A tiempo!"
           : "¡Genial!",
       "ok",
@@ -239,12 +299,20 @@ export function RhythmCallResponse({
   };
 
   const start = () => {
-    audioRef.current.unlock();
+    if (!audioRef.current.unlock()) {
+      showFeedback("Tu navegador no permite audio aquí.", "soft");
+      return;
+    }
     clearTimers();
     completedRef.current = false;
     accuraciesRef.current = [];
     qualityRef.current = 0;
     expectedRef.current = [];
+    // Re-read the device offset: another tab may have calibrated meanwhile.
+    compensationRef.current = rhythmCompensation(
+      readStoredRhythmCalibration(),
+      audioRef.current.getLatency(),
+    );
     setLit([false, false, false, false]);
     setBar(0);
     setFeedback(null);
@@ -259,7 +327,22 @@ export function RhythmCallResponse({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) return;
       if (event.code !== "Space" && event.key !== "Enter") return;
+      // A focused button keeps its native activation (calibrate, start,
+      // cancel). Only the two pads are driven by this shortcut.
+      const target = event.target as HTMLElement | null;
+      const button = target?.closest("button");
+      if (button) {
+        const label = button.getAttribute("aria-label") ?? "";
+        const isPad =
+          label === "Tocar el ritmo" || label === "Tocar el clic de calibración";
+        if (!isPad) return;
+      }
       event.preventDefault();
+      const current = calibrationRef.current;
+      if (current.status === "listening") {
+        current.tap();
+        return;
+      }
       tapRef.current();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -392,14 +475,99 @@ export function RhythmCallResponse({
       </div>
 
       {phase === "idle" ? (
-        <button
-          type="button"
-          onClick={start}
-          className="flex min-h-[54px] w-full items-center justify-center gap-2 rounded-2xl border border-cyan-300/30 bg-cyan-300/[0.12] text-[13px] font-semibold text-cyan-50 transition-colors hover:bg-cyan-300/[0.18]"
-        >
-          <Play size={16} fill="currentColor" />
-          Empezar lección
-        </button>
+        <div className="space-y-3">
+          <div className="rounded-[16px] border border-white/[0.08] bg-white/[0.02] p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold text-slate-100">
+                  Ajusta tu toque
+                </p>
+                <p className="mt-0.5 text-[10px] leading-snug text-slate-400">
+                  {calibration.message}
+                </p>
+              </div>
+              {calibration.stored && calibration.status !== "listening" ? (
+                <span className="shrink-0 rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2 py-0.5 text-[8px] font-bold uppercase tracking-[0.12em] text-cyan-200">
+                  Ajustado
+                </span>
+              ) : null}
+            </div>
+
+            {calibration.status === "listening" ? (
+              <>
+                <div className="mt-2 flex items-center gap-1.5">
+                  {Array.from({ length: CALIBRATION_CLICKS }, (_, index) => (
+                    <span
+                      key={index}
+                      className={cn(
+                        "h-1.5 flex-1 rounded-full transition-colors",
+                        index < calibration.taps.length
+                          ? "bg-cyan-300"
+                          : "bg-white/10",
+                      )}
+                    />
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    calibration.tap();
+                  }}
+                  aria-label="Tocar el clic de calibración"
+                  className="mt-2 flex min-h-[74px] w-full touch-none select-none flex-col items-center justify-center gap-0.5 rounded-2xl border-2 border-cyan-300/50 bg-cyan-300/[0.10] text-[11px] font-bold text-cyan-50 active:scale-[0.99]"
+                >
+                  <Hand size={18} strokeWidth={1.6} />
+                  TOCA CON EL CLIC
+                </button>
+                <button
+                  type="button"
+                  onClick={calibration.cancel}
+                  className="mt-2 w-full text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-400"
+                >
+                  Cancelar
+                </button>
+              </>
+            ) : (
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={calibration.start}
+                  className="min-h-[38px] flex-1 rounded-xl border border-white/10 bg-white/[0.04] text-[10px] font-semibold text-slate-200 transition-colors hover:bg-white/[0.07]"
+                >
+                  {calibration.stored ? "Volver a calibrar" : "Calibrar (4 toques)"}
+                </button>
+                {calibration.stored ? (
+                  <button
+                    type="button"
+                    onClick={calibration.reset}
+                    className="min-h-[38px] rounded-xl border border-white/[0.06] px-3 text-[9px] font-semibold text-slate-400"
+                  >
+                    Borrar ajuste
+                  </button>
+                ) : null}
+              </div>
+            )}
+
+            {calibration.latency.outputLatency >= 0.1 &&
+            !calibration.stored ? (
+              <p className="mt-2 text-[9px] leading-snug text-amber-200/90">
+                Tu equipo declara un retraso alto. Para las lecciones de ritmo,
+                usa audífonos con cable.
+              </p>
+            ) : null}
+          </div>
+
+          <button
+            type="button"
+            onClick={start}
+            disabled={calibration.status === "listening"}
+            className="flex min-h-[54px] w-full items-center justify-center gap-2 rounded-2xl border border-cyan-300/30 bg-cyan-300/[0.12] text-[13px] font-semibold text-cyan-50 transition-colors hover:bg-cyan-300/[0.18] disabled:opacity-50"
+          >
+            <Play size={16} fill="currentColor" />
+            {calibration.practiceMode ? "Empezar práctica" : "Empezar lección"}
+          </button>
+        </div>
       ) : (
         <button
           type="button"
@@ -410,7 +578,7 @@ export function RhythmCallResponse({
           disabled={!yourTurn}
           aria-label="Tocar el ritmo"
           className={cn(
-            "relative flex min-h-[132px] w-full touch-manipulation select-none flex-col items-center justify-center gap-1 rounded-3xl border-2 transition-all duration-150",
+            "relative flex min-h-[132px] w-full touch-none select-none flex-col items-center justify-center gap-1 rounded-3xl border-2 transition-all duration-150",
             yourTurn
               ? "border-cyan-300/60 bg-cyan-300/[0.12] shadow-[0_0_40px_rgba(56,189,248,0.28)] active:scale-[0.985] active:bg-cyan-300/[0.22]"
               : "border-white/[0.06] bg-white/[0.025] opacity-70",
@@ -469,6 +637,9 @@ export function RhythmCallResponse({
 
       <p className="text-center text-[9px] text-slate-500">
         Compás {Math.min(BARS, bar + 1)} de {BARS} · {drill.bpm} BPM
+        {compensation.source === "calibration"
+          ? " · Toque ajustado a este equipo"
+          : ""}
       </p>
     </div>
   );

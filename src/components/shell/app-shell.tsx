@@ -64,7 +64,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <main
         id="contenido"
-        className="relative z-10 mx-auto w-full max-w-[560px] px-5 pb-[calc(env(safe-area-inset-bottom,0px)+9.5rem)] pt-[calc(env(safe-area-inset-top,0px)+8.4rem)] sm:px-7"
+        className="relative z-10 mx-auto w-full max-w-[560px] px-5 pb-[calc(env(safe-area-inset-bottom,0px)+9.5rem)] pt-[calc(env(safe-area-inset-top,0px)+10rem)] sm:px-7"
       >
         {children}
       </main>

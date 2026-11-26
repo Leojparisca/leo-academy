@@ -546,6 +546,8 @@ function PulseFeel({
   const [beats, setBeats] = useState(0);
   const [taps, setTaps] = useState(0);
   const timers = useRef<number[]>([]);
+  const tapsRef = useRef(0);
+  const completedRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -555,26 +557,37 @@ function PulseFeel({
   }, [audio]);
 
   const playPulse = () => {
-    audio.unlock();
+    if (!audio.unlock()) return;
     timers.current.forEach((timer) => window.clearTimeout(timer));
     timers.current = [];
     setBeats(0);
-    const gap = 60000 / bpm;
+    // Schedule every click on the audio clock. Without `when`, all eight were
+    // fired on the same frame and the student heard a single hit.
+    const origin = audio.now();
+    const startAt = origin + 0.08;
+    const gap = 60 / bpm;
     for (let index = 0; index < 8; index += 1) {
-      audio.playPercussion("click", { accent: index % 4 === 0 });
-      const timer = window.setTimeout(() => {
-        setBeats(index + 1);
-      }, index * gap);
+      const when = startAt + index * gap;
+      audio.playPercussion("click", { when, accent: index % 4 === 0 });
+      const timer = window.setTimeout(
+        () => setBeats(index + 1),
+        Math.max(0, (when - origin) * 1000),
+      );
       timers.current.push(timer);
     }
   };
 
   const tap = () => {
+    if (completedRef.current) return;
     audio.unlock();
     audio.playPercussion("woodblock");
-    const next = taps + 1;
+    const next = tapsRef.current + 1;
+    tapsRef.current = next;
     setTaps(next);
-    if (next >= 4) onDone();
+    if (next >= 4) {
+      completedRef.current = true;
+      onDone();
+    }
   };
 
   return (

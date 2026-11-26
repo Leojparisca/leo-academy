@@ -3,10 +3,12 @@
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { ActionResult, Student } from "@/lib/academy";
+import type { StudentProgressPackage } from "@/lib/progress-package";
 import { getStudentSessionId } from "@/server/auth/student-session";
 import { isTeacherAuthenticated } from "@/server/auth/teacher-session";
 import { getReadyDb } from "@/server/db/client";
 import type { Tx } from "@/server/db/helpers";
+import { getStudentProgressPackage } from "@/server/queries/students";
 import {
   lessonProgress,
   levels,
@@ -14,6 +16,7 @@ import {
   skillScores,
   students,
 } from "@/server/db/schema";
+import { scoreRowId } from "@/lib/sync-keys";
 
 const practiceSchema = z.object({
   clientId: z.string().min(8).max(80),
@@ -31,12 +34,16 @@ type PracticeInput = z.infer<typeof practiceSchema>;
  * Writes one practice session against an open transaction. Idempotent: the
  * client id is the primary key, so a retried Server Action never double-counts
  * minutes.
+ *
+ * The three outcomes are deliberately distinct: a duplicate is a success (the
+ * row is already safe), while a rejection means the academy does not know the
+ * student or the level and the device must keep the row.
  */
 async function persistPractice(
   tx: Tx,
   input: PracticeInput,
   source: "live" | "offline" = "live",
-) {
+): Promise<"stored" | "duplicate" | "rejected"> {
   const studentRows = await tx
     .select({ id: students.id })
     .from(students)
@@ -48,7 +55,7 @@ async function persistPractice(
     .where(eq(levels.id, input.levelId))
     .limit(1);
 
-  if (!studentRows[0] || !levelRows[0]) return false;
+  if (!studentRows[0] || !levelRows[0]) return "rejected";
 
   const inserted = await tx
     .insert(practiceSessions)
@@ -64,7 +71,7 @@ async function persistPractice(
     })
     .onConflictDoNothing();
 
-  if (inserted.rowsAffected === 0) return false;
+  if (inserted.rowsAffected === 0) return "duplicate";
 
   await tx
     .update(students)
@@ -79,7 +86,10 @@ async function persistPractice(
   await tx
     .insert(skillScores)
     .values({
-      id: `score_${input.clientId}`,
+      // Canonical identity: the live heartbeat and a later device backup use
+      // this exact id for the same event, so `onConflictDoNothing` finally
+      // prevents the triple count it was supposed to prevent.
+      id: scoreRowId(input.clientId),
       studentId: input.studentId,
       skill: input.skill,
       score: input.score,
@@ -113,7 +123,7 @@ async function persistPractice(
       },
     });
 
-  return true;
+  return "stored";
 }
 
 export async function fetchStudentsAction(): Promise<
@@ -168,6 +178,45 @@ export async function fetchStudentsAction(): Promise<
   }
 }
 
+/**
+ * Reads the signed-in student's whole progress package.
+ *
+ * There is no `studentId` argument and no teacher branch on purpose: the only
+ * identity this action trusts is the HMAC cookie, so the response can never
+ * describe a different student than the one holding the session.
+ */
+export async function fetchStudentProgressAction(): Promise<
+  ActionResult<StudentProgressPackage>
+> {
+  const sessionId = await getStudentSessionId();
+  if (!sessionId) {
+    return {
+      ok: false,
+      error: "Abre tu perfil de alumno para ver tu progreso.",
+      code: "UNAUTHORIZED",
+    };
+  }
+
+  try {
+    const pkg = await getStudentProgressPackage(sessionId);
+    if (!pkg) {
+      return {
+        ok: false,
+        error: "No encontramos tu perfil en la academia.",
+        code: "NOT_FOUND",
+      };
+    }
+    return { ok: true, data: pkg };
+  } catch (error) {
+    console.error("[leo] No se pudo leer el progreso del alumno", error);
+    return {
+      ok: false,
+      error: "No pudimos traer tu progreso. Tus datos siguen aquí.",
+      code: "DB_UNAVAILABLE",
+    };
+  }
+}
+
 async function canWriteStudent(studentId: string) {
   if (await isTeacherAuthenticated()) return true;
   const sessionId = await getStudentSessionId();
@@ -196,7 +245,18 @@ export async function logPracticeAction(
 
   try {
     const db = await getReadyDb();
-    await db.transaction((tx) => persistPractice(tx, parsed.data));
+    const outcome = await db.transaction((tx) =>
+      persistPractice(tx, parsed.data),
+    );
+    if (outcome === "rejected") {
+      // The academy does not know the student or the level. Report failure so
+      // the device keeps the session in its outbox instead of losing it.
+      return {
+        ok: false,
+        error: "La academia no reconoce a este alumno o este nivel.",
+        code: "NOT_FOUND",
+      };
+    }
     return { ok: true, data: { minutes: parsed.data.minutes } };
   } catch (error) {
     console.error("[leo] Error al guardar práctica", error);
@@ -210,7 +270,9 @@ export async function logPracticeAction(
 
 export async function syncPracticeSessionsAction(
   items: unknown,
-): Promise<ActionResult<{ synced: number; rejected: number }>> {
+): Promise<
+  ActionResult<{ synced: number; rejected: number; rejectedClientIds: string[] }>
+> {
   const parsed = z.array(practiceSchema).max(50).safeParse(items);
   if (!parsed.success) {
     return {
@@ -240,11 +302,17 @@ export async function syncPracticeSessionsAction(
     const counts = await db.transaction(async (tx) => {
       let synced = 0;
       let rejected = 0;
+      const rejectedClientIds: string[] = [];
       for (const item of parsed.data) {
-        if (await persistPractice(tx, item, "offline")) synced += 1;
-        else rejected += 1;
+        const outcome = await persistPractice(tx, item, "offline");
+        if (outcome === "rejected") {
+          rejected += 1;
+          rejectedClientIds.push(item.clientId);
+        } else {
+          synced += 1;
+        }
       }
-      return { synced, rejected };
+      return { synced, rejected, rejectedClientIds };
     });
 
     return { ok: true, data: counts };

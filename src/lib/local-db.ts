@@ -22,9 +22,23 @@ import {
   DEVICE_ID_KEY,
   type BackupDump,
   type BackupStudent,
+  type BackupSummary,
+  type BackupTruncation,
   type LocalBackupStats,
 } from "@/lib/backup";
+import {
+  curriculumProgressKey,
+  lessonProgressKey,
+  practiceSessionKey,
+  skillScoreKey,
+  xpKey,
+} from "@/lib/sync-keys";
+import {
+  canonicalClientId,
+  type StudentProgressPackage,
+} from "@/lib/progress-package";
 import { type BranchId, type CurriculumNode } from "@/data/curriculum";
+import { uid } from "@/lib/utils";
 
 export type LocalLessonProgress = {
   id?: number;
@@ -45,6 +59,18 @@ export type LocalSkillScore = {
   source: "lesson" | "game" | "teacher";
   createdAt: string;
   synced: 0 | 1;
+  /**
+   * Random identity of the event that produced this row. It is the same value
+   * the server uses to key `skill_scores`, so the live heartbeat, the practice
+   * action and a later backup all collapse into one row instead of three.
+   */
+  clientId?: string;
+  /**
+   * `"server"` marks a row that came down from the academy rather than being
+   * produced on this device. Such a row is already safe upstream: it is never
+   * re-sent in a backup and never counted as pending sync.
+   */
+  origin?: "device" | "server";
 };
 
 export type OfflineMutationKind = "practice" | "evaluation" | "student";
@@ -79,6 +105,10 @@ export type LocalXpEntry = {
   detail: string;
   createdAt: string;
   synced: 0 | 1;
+  /** Same rule as `LocalSkillScore.clientId`: identity, never a timestamp. */
+  clientId?: string;
+  /** Same rule as `LocalSkillScore.origin`. */
+  origin?: "device" | "server";
 };
 
 /** Mirror of the SQLite attendance row used by "Pasar Lista Grupal". */
@@ -411,6 +441,7 @@ export async function appendXp(input: {
     detail: input.detail,
     createdAt: new Date().toISOString(),
     synced: 0,
+    clientId: uid("xp"),
   });
 }
 
@@ -522,12 +553,376 @@ export async function saveCurriculumResult(input: {
   return { stars, accuracy };
 }
 
+export type BackupManifestEntry = {
+  id: number;
+  key: string;
+  stamp: string;
+};
+
+export type BackupManifest = {
+  lessonProgress: BackupManifestEntry[];
+  skillScores: BackupManifestEntry[];
+  curriculumProgress: BackupManifestEntry[];
+  xpLedger: BackupManifestEntry[];
+  practiceSessions: Array<{ queueId: number; key: string; stamp: string }>;
+};
+
+export type BackupPayload = {
+  dump: BackupDump;
+  manifest: BackupManifest;
+  truncated: BackupTruncation[];
+};
+
+/* ------------------------------------------------------------------ *
+ * Server → device hydration (Max-Wins)
+ *
+ * The device cache is never replaced wholesale: that would delete practice
+ * done offline on this phone. Each row is merged monotonically instead —
+ * the largest XP, the most stars and the best accuracy always win, and the
+ * union of sealed nodes is kept. A row can move forward, never backwards.
+ * ------------------------------------------------------------------ */
+
+export type HydrationConflict = {
+  /** Rows where the academy was ahead and the device caught up. */
+  remoteAhead: number;
+  /** Rows where the device was ahead and its value was preserved. */
+  localAhead: number;
+  /** True when the device already had progress before this merge. */
+  hadLocalProgress: boolean;
+};
+
+export type HydrationResult = {
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  conflict: HydrationConflict;
+};
+
+/** Merges two stamps so the survivor looks the most recent of the two. */
+function latestStamp(left: string, right: string) {
+  return right > left ? right : left;
+}
+
 /**
- * Reads the whole on-device cache as a validated backup dump. Only the newest
- * rows survive when a table exceeds its hard ceiling, so the most valuable
- * progress is what reaches SQLite first.
+ * Writes a server progress package into Dexie.
+ *
+ * Rules, in order of importance:
+ *  1. nothing is deleted — only `put`, never `delete`/`clear`;
+ *  2. XP and lesson/skill rows are merged with `max`, so the best value wins;
+ *  3. `curriculum_progress` is the union of sealed nodes; a node present only
+ *     on the device stays;
+ *  4. rows that already exist upstream are stored as `origin: "server"` and
+ *     `synced: 1`, which excludes them from the next backup;
+ *  5. `lesson_progress` rows are never downgraded from `completed` to
+ *     `locked`/`current`, and `progress`/`minutesPracticed` never shrink.
+ *
+ * The `student` row is deliberately untouched: the profile was already
+ * rendered from the server layout, and the teacher owns identity and level.
  */
-export async function readBackupDump(): Promise<BackupDump> {
+export async function hydrateFromServer(
+  pkg: StudentProgressPackage,
+): Promise<HydrationResult> {
+  const db = getLocalDb();
+  const studentId = pkg.student.id;
+
+  const [localLessons, localScores, localCurriculum, localXp] = await Promise.all([
+    db.lessonProgress.where("studentId").equals(studentId).toArray(),
+    db.skillScores.where("studentId").equals(studentId).toArray(),
+    db.curriculumProgress.where("studentId").equals(studentId).toArray(),
+    db.xpLedger.where("studentId").equals(studentId).toArray(),
+  ]);
+
+  let inserted = 0;
+  let updated = 0;
+  let unchanged = 0;
+  let remoteAhead = 0;
+  let localAhead = 0;
+  const hadLocalProgress =
+    localLessons.length + localScores.length + localCurriculum.length + localXp.length > 0;
+
+  /* -------------------------------------------------------------- lessons */
+  const lessonStatusRank = { locked: 0, current: 1, completed: 2 } as const;
+  for (const remote of pkg.lessonProgress) {
+    const local = localLessons.find((row) => row.levelId === remote.levelId);
+    if (!local) {
+      await db.lessonProgress.add({
+        studentId,
+        levelId: remote.levelId,
+        status: remote.status,
+        progress: remote.progress,
+        minutesPracticed: remote.minutesPracticed,
+        updatedAt: remote.updatedAt,
+        synced: 1,
+      });
+      inserted += 1;
+      continue;
+    }
+
+    // A lesson the student finished on this device stays finished even if the
+    // academy still has it as "current": progress is monotonic.
+    const keepLocalStatus =
+      lessonStatusRank[local.status] > lessonStatusRank[remote.status];
+    const nextStatus = keepLocalStatus ? local.status : remote.status;
+    const nextProgress = Math.max(local.progress, remote.progress);
+    const nextMinutes = Math.max(local.minutesPracticed, remote.minutesPracticed);
+
+    if (
+      lessonStatusRank[remote.status] > lessonStatusRank[local.status] ||
+      remote.progress > local.progress ||
+      remote.minutesPracticed > local.minutesPracticed
+    ) {
+      remoteAhead += 1;
+    } else if (
+      lessonStatusRank[local.status] > lessonStatusRank[remote.status] ||
+      local.progress > remote.progress ||
+      local.minutesPracticed > remote.minutesPracticed
+    ) {
+      localAhead += 1;
+    }
+
+    if (
+      nextStatus === local.status &&
+      nextProgress === local.progress &&
+      nextMinutes === local.minutesPracticed
+    ) {
+      unchanged += 1;
+      continue;
+    }
+
+    await db.lessonProgress.update(local.id!, {
+      status: nextStatus,
+      progress: nextProgress,
+      minutesPracticed: nextMinutes,
+      updatedAt: latestStamp(local.updatedAt, remote.updatedAt),
+      synced: 1,
+    });
+    updated += 1;
+  }
+
+  /* ----------------------------------------------------------- curriculum */
+  const curriculumByNode = new Map(
+    localCurriculum.map((row) => [row.nodeId, row] as const),
+  );
+  for (const remote of pkg.curriculumProgress) {
+    const local = curriculumByNode.get(remote.nodeId);
+    if (!local) {
+      await db.curriculumProgress.add({
+        studentId,
+        nodeId: remote.nodeId,
+        branch: remote.branch,
+        level: remote.level,
+        stars: remote.stars,
+        accuracy: remote.accuracy,
+        updatedAt: remote.updatedAt,
+        synced: 1,
+      });
+      inserted += 1;
+      continue;
+    }
+
+    const stars = Math.max(local.stars, remote.stars) as 1 | 2 | 3;
+    const accuracy = Math.max(local.accuracy, remote.accuracy);
+    if (remote.stars > local.stars || remote.accuracy > local.accuracy) {
+      remoteAhead += 1;
+    } else if (local.stars > remote.stars || local.accuracy > remote.accuracy) {
+      localAhead += 1;
+    }
+
+    if (stars === local.stars && accuracy === local.accuracy) {
+      // Already identical: only the bookkeeping changes, and only if needed.
+      if (local.synced !== 1) {
+        await db.curriculumProgress.update(local.id!, { synced: 1 });
+        updated += 1;
+      } else {
+        unchanged += 1;
+      }
+      continue;
+    }
+
+    await db.curriculumProgress.update(local.id!, {
+      stars,
+      accuracy,
+      updatedAt: latestStamp(local.updatedAt, remote.updatedAt),
+      synced: 1,
+    });
+    updated += 1;
+  }
+
+  /* -------------------------------------------------------- skill scores */
+  const scoreKey = (row: {
+    clientId?: string;
+    studentId: string;
+    skill: string;
+    score: number;
+    createdAt: string;
+  }) => skillScoreKey({ ...row, clientId: row.clientId ?? null });
+
+  // Legacy rows came back from the academy with a hashed id, so the client id
+  // cannot match. Their content is the only stable handle left.
+  const contentScoreKey = (row: {
+    skill: string;
+    score: number;
+    createdAt: string;
+  }) => `${row.skill}|${row.score}|${row.createdAt}`;
+
+  const localScoreContent = new Map(
+    localScores.map((row) => [contentScoreKey(row), row] as const),
+  );
+
+  for (const remote of pkg.skillScores) {
+    const clientId = canonicalClientId(remote.clientId);
+    const key = skillScoreKey({
+      clientId,
+      studentId,
+      skill: remote.skill,
+      score: remote.score,
+      createdAt: remote.createdAt,
+    });
+    const content = contentScoreKey(remote);
+
+    const local =
+      localScores.find((row) => scoreKey(row) === key) ??
+      localScoreContent.get(content);
+
+    if (local) {
+      // The event already exists on this device (it produced the row in the
+      // first place). Mark it as confirmed instead of duplicating it.
+      if (local.synced !== 1) {
+        await db.skillScores.update(local.id!, {
+          synced: 1,
+          origin: "server",
+        });
+        updated += 1;
+      } else {
+        unchanged += 1;
+      }
+      continue;
+    }
+
+    await db.skillScores.add({
+      studentId,
+      skill: remote.skill,
+      score: remote.score,
+      source: remote.source,
+      createdAt: remote.createdAt,
+      synced: 1,
+      clientId,
+      origin: "server",
+    });
+    inserted += 1;
+  }
+
+  /* ---------------------------------------------------------- xp ledger */
+  const xpKeyOf = (row: {
+    clientId?: string;
+    studentId: string;
+    source: string;
+    amount: number;
+    detail: string;
+    createdAt: string;
+  }) => xpKey({ ...row, clientId: row.clientId ?? null });
+
+  const localXpKeys = new Set(localXp.map((row) => xpKeyOf(row)));
+  for (const remote of pkg.xpLedger) {
+    const clientId = canonicalClientId(remote.clientId);
+    const key = xpKey({
+      clientId,
+      studentId,
+      source: remote.source,
+      amount: remote.amount,
+      detail: remote.detail,
+      createdAt: remote.createdAt,
+    });
+
+    if (localXpKeys.has(key)) {
+      const local = localXp.find((row) => xpKeyOf(row) === key);
+      if (!local) {
+        unchanged += 1;
+        continue;
+      }
+
+      // The same event, but the two copies disagree on the amount. Max wins:
+      // a stale queued entry must never lower a ledger the academy already
+      // corrected. The count feeds the "this phone was behind" notice.
+      if (remote.amount > local.amount) remoteAhead += 1;
+      else if (local.amount > remote.amount) localAhead += 1;
+      const amount = Math.max(local.amount, remote.amount);
+
+      if (
+        local.synced !== 1 ||
+        local.amount !== amount ||
+        local.origin !== "server"
+      ) {
+        await db.xpLedger.update(local.id!, {
+          amount,
+          clientId: local.clientId ?? clientId,
+          synced: 1,
+          origin: "server",
+        });
+        updated += 1;
+      } else {
+        unchanged += 1;
+      }
+      continue;
+    }
+
+    // A locally queued XP entry for the same moment and detail is the same
+    // event: keep one row, keep the larger amount, never both.
+    const rival = localXp.find(
+      (row) =>
+        row.detail === remote.detail &&
+        row.source === remote.source &&
+        row.createdAt === remote.createdAt,
+    );
+    if (rival) {
+      if (remote.amount > rival.amount) remoteAhead += 1;
+      else if (rival.amount > remote.amount) localAhead += 1;
+      await db.xpLedger.update(rival.id!, {
+        amount: Math.max(rival.amount, remote.amount),
+        clientId: rival.clientId ?? clientId,
+        synced: 1,
+        origin: "server",
+      });
+      updated += 1;
+      continue;
+    }
+
+    await db.xpLedger.add({
+      studentId,
+      amount: remote.amount,
+      source: remote.source,
+      detail: remote.detail,
+      createdAt: remote.createdAt,
+      synced: 1,
+      clientId,
+      origin: "server",
+    });
+    localXpKeys.add(key);
+    inserted += 1;
+  }
+
+  return {
+    inserted,
+    updated,
+    unchanged,
+    conflict: {
+      remoteAhead,
+      localAhead,
+      hadLocalProgress,
+    },
+  };
+}
+
+/**
+ * Reads the whole on-device cache as a validated backup dump.
+ *
+ * The dump and its manifest come from a single pass over the same slice. The
+ * manifest is the only trustworthy record of what actually left the device, so
+ * a row can never be marked as synced by accident. When a table hits its hard
+ * ceiling the overflow is reported, not discarded silently: it stays on the
+ * device and travels in the next backup.
+ */
+export async function readBackupPayload(): Promise<BackupPayload> {
   const db = getLocalDb();
   const [students, lessonProgress, skillScores, curriculumProgress, xpLedger, queue] =
     await Promise.all([
@@ -543,20 +938,109 @@ export async function readBackupDump(): Promise<BackupDump> {
         .toArray(),
     ]);
 
-  const practiceSessions = queue.flatMap((entry) => {
+  // Rows that came down from the academy are already in SQLite: re-sending them
+  // would waste the tight per-table ceilings and could resurrect a row the
+  // server has since corrected. Only what this device produced travels back.
+  const localOnlyScores = skillScores.filter((row) => row.origin !== "server");
+  const localOnlyXp = xpLedger.filter((row) => row.origin !== "server");
+
+  const sessions = queue.flatMap((entry) => {
     try {
-      return [JSON.parse(entry.payload) as PracticePayload];
+      return [
+        {
+          queueId: entry.id!,
+          payload: JSON.parse(entry.payload) as PracticePayload,
+        },
+      ];
     } catch {
       return [];
     }
   });
 
+  const studentRows = newest(
+    students,
+    BACKUP_LIMITS.students,
+    (row) => row.updatedAt,
+  );
+  const lessonRows = newest(
+    lessonProgress,
+    BACKUP_LIMITS.lessonProgress,
+    (row) => row.updatedAt,
+  );
+  const scoreRows = newest(
+    localOnlyScores,
+    BACKUP_LIMITS.skillScores,
+    (row) => row.createdAt,
+  );
+  const curriculumRows = newest(
+    curriculumProgress,
+    BACKUP_LIMITS.curriculumProgress,
+    (row) => row.updatedAt,
+  );
+  const xpRows = newest(
+    localOnlyXp,
+    BACKUP_LIMITS.xpLedger,
+    (row) => row.createdAt,
+  );
+  const sessionRows = newest(
+    sessions,
+    BACKUP_LIMITS.practiceSessions,
+    (row) => row.payload.createdAt,
+  );
+
+  const truncated: BackupTruncation[] = [];
+  const noteTruncation = (
+    table: BackupTruncation["table"],
+    total: number,
+    kept: number,
+  ) => {
+    if (total > kept) truncated.push({ table, total, kept });
+  };
+  noteTruncation("students", students.length, studentRows.length);
+  noteTruncation("lessonProgress", lessonProgress.length, lessonRows.length);
+  noteTruncation("skillScores", localOnlyScores.length, scoreRows.length);
+  noteTruncation(
+    "curriculumProgress",
+    curriculumProgress.length,
+    curriculumRows.length,
+  );
+  noteTruncation("xpLedger", localOnlyXp.length, xpRows.length);
+  noteTruncation("practiceSessions", sessions.length, sessionRows.length);
+
+  const manifest: BackupManifest = {
+    lessonProgress: lessonRows.map((row) => ({
+      id: row.id!,
+      key: lessonProgressKey(row),
+      stamp: row.updatedAt,
+    })),
+    skillScores: scoreRows.map((row) => ({
+      id: row.id!,
+      key: skillScoreKey(row),
+      stamp: row.createdAt,
+    })),
+    curriculumProgress: curriculumRows.map((row) => ({
+      id: row.id!,
+      key: curriculumProgressKey(row),
+      stamp: row.updatedAt,
+    })),
+    xpLedger: xpRows.map((row) => ({
+      id: row.id!,
+      key: xpKey(row),
+      stamp: row.createdAt,
+    })),
+    practiceSessions: sessionRows.map((row) => ({
+      queueId: row.queueId,
+      key: practiceSessionKey(row.payload),
+      stamp: row.payload.createdAt,
+    })),
+  };
+
   return {
-    version: BACKUP_VERSION,
-    generatedAt: new Date().toISOString(),
-    deviceId: readDeviceId(),
-    students: newest(
-      students.map(
+    dump: {
+      version: BACKUP_VERSION,
+      generatedAt: new Date().toISOString(),
+      deviceId: readDeviceId(),
+      students: studentRows.map(
         (student): BackupStudent => ({
           id: student.id,
           name: student.name,
@@ -575,11 +1059,7 @@ export async function readBackupDump(): Promise<BackupDump> {
           updatedAt: student.updatedAt,
         }),
       ),
-      BACKUP_LIMITS.students,
-      (row) => row.updatedAt,
-    ),
-    lessonProgress: newest(
-      lessonProgress.map((row) => ({
+      lessonProgress: lessonRows.map((row) => ({
         studentId: row.studentId,
         levelId: row.levelId,
         status: row.status,
@@ -587,22 +1067,15 @@ export async function readBackupDump(): Promise<BackupDump> {
         minutesPracticed: row.minutesPracticed,
         updatedAt: row.updatedAt,
       })),
-      BACKUP_LIMITS.lessonProgress,
-      (row) => row.updatedAt,
-    ),
-    skillScores: newest(
-      skillScores.map((row) => ({
+      skillScores: scoreRows.map((row) => ({
         studentId: row.studentId,
         skill: row.skill,
         score: row.score,
         source: row.source,
         createdAt: row.createdAt,
+        clientId: row.clientId,
       })),
-      BACKUP_LIMITS.skillScores,
-      (row) => row.createdAt,
-    ),
-    curriculumProgress: newest(
-      curriculumProgress.map((row) => ({
+      curriculumProgress: curriculumRows.map((row) => ({
         studentId: row.studentId,
         nodeId: row.nodeId,
         branch: row.branch,
@@ -611,25 +1084,18 @@ export async function readBackupDump(): Promise<BackupDump> {
         accuracy: row.accuracy,
         updatedAt: row.updatedAt,
       })),
-      BACKUP_LIMITS.curriculumProgress,
-      (row) => row.updatedAt,
-    ),
-    xpLedger: newest(
-      xpLedger.map((row) => ({
+      xpLedger: xpRows.map((row) => ({
         studentId: row.studentId,
         amount: row.amount,
         source: row.source,
         detail: row.detail,
         createdAt: row.createdAt,
+        clientId: row.clientId,
       })),
-      BACKUP_LIMITS.xpLedger,
-      (row) => row.createdAt,
-    ),
-    practiceSessions: newest(
-      practiceSessions,
-      BACKUP_LIMITS.practiceSessions,
-      (row) => row.createdAt,
-    ),
+      practiceSessions: sessionRows.map((row) => row.payload),
+    },
+    manifest,
+    truncated,
   };
 }
 
@@ -687,52 +1153,53 @@ export async function readBackupStats(): Promise<LocalBackupStats> {
 }
 
 /**
- * Called only after the Server Action confirms the transaction. Marks the rows
- * that actually travelled in the dump as safe (never the overflow beyond a
- * table's ceiling) and clears the practice outbox that was included.
+ * Called only after the Server Action confirms the transaction.
+ *
+ * A row is marked as synced only when all three conditions hold:
+ *  1. it was part of the exact slice that travelled (the manifest);
+ *  2. the server did not report its natural key as rejected;
+ *  3. its stamp has not changed since the dump was built.
+ *
+ * The practice outbox follows the same rule: delivered sessions are deleted,
+ * rejected ones stay on the device marked `failed`, and sessions created while
+ * the request was in flight were never in the manifest, so they are untouched.
  */
-export async function markBackupSynced() {
+export async function markBackupSynced(
+  summary: BackupSummary,
+  manifest: BackupManifest,
+) {
   const db = getLocalDb();
+  const rejected = {
+    lessonProgress: new Set(summary.rejected.lessonProgress),
+    skillScores: new Set(summary.rejected.skillScores),
+    curriculumProgress: new Set(summary.rejected.curriculumProgress),
+    xpLedger: new Set(summary.rejected.xpLedger),
+    practiceSessions: new Set(summary.rejected.practiceSessions),
+  };
 
-  const [lesson, scores, curriculum, xp, pending] = await Promise.all([
-    db.lessonProgress.toArray(),
-    db.skillScores.toArray(),
-    db.curriculumProgress.toArray(),
-    db.xpLedger.toArray(),
-    db.offlineQueue
-      .where("kind")
-      .equals("practice")
-      .and((entry) => entry.status === "pending")
-      .toArray(),
-  ]);
-
-  const lessonIds = new Set(
-    newest(lesson, BACKUP_LIMITS.lessonProgress, (row) => row.updatedAt).map(
-      (row) => row.id!,
-    ),
+  const lessonIds = await confirmedIds(
+    manifest.lessonProgress,
+    rejected.lessonProgress,
+    async (ids) =>
+      (await db.lessonProgress.bulkGet(ids)).map((row) => row?.updatedAt),
   );
-  const scoreIds = new Set(
-    newest(scores, BACKUP_LIMITS.skillScores, (row) => row.createdAt).map(
-      (row) => row.id!,
-    ),
+  const scoreIds = await confirmedIds(
+    manifest.skillScores,
+    rejected.skillScores,
+    async (ids) =>
+      (await db.skillScores.bulkGet(ids)).map((row) => row?.createdAt),
   );
-  const curriculumIds = new Set(
-    newest(
-      curriculum,
-      BACKUP_LIMITS.curriculumProgress,
-      (row) => row.updatedAt,
-    ).map((row) => row.id!),
+  const curriculumIds = await confirmedIds(
+    manifest.curriculumProgress,
+    rejected.curriculumProgress,
+    async (ids) =>
+      (await db.curriculumProgress.bulkGet(ids)).map((row) => row?.updatedAt),
   );
-  const xpIds = new Set(
-    newest(xp, BACKUP_LIMITS.xpLedger, (row) => row.createdAt).map(
-      (row) => row.id!,
-    ),
+  const xpIds = await confirmedIds(
+    manifest.xpLedger,
+    rejected.xpLedger,
+    async (ids) => (await db.xpLedger.bulkGet(ids)).map((row) => row?.createdAt),
   );
-  const pendingIds = newest(
-    pending,
-    BACKUP_LIMITS.practiceSessions,
-    (entry) => entry.createdAt,
-  ).flatMap((entry) => (entry.id == null ? [] : [entry.id]));
 
   await Promise.all([
     db.lessonProgress
@@ -745,9 +1212,47 @@ export async function markBackupSynced() {
     db.xpLedger.filter((row) => xpIds.has(row.id!)).modify({ synced: 1 }),
   ]);
 
-  if (pendingIds.length) {
-    await db.offlineQueue.bulkDelete(pendingIds);
+  const queueIds = manifest.practiceSessions.map((entry) => entry.queueId);
+  if (!queueIds.length) return;
+
+  const queueRows = await db.offlineQueue.bulkGet(queueIds);
+  const delivered: number[] = [];
+  const failed: number[] = [];
+
+  manifest.practiceSessions.forEach((entry, index) => {
+    const row = queueRows[index];
+    if (!row) return;
+    if (rejected.practiceSessions.has(entry.key)) {
+      // Refused by the server: never delete it, never retry it blindly.
+      if (row.status !== "failed") failed.push(entry.queueId);
+      return;
+    }
+    if (row.status === "pending") delivered.push(entry.queueId);
+  });
+
+  if (delivered.length) await db.offlineQueue.bulkDelete(delivered);
+  for (const id of failed) {
+    await db.offlineQueue.update(id, { status: "failed" });
   }
+}
+
+/**
+ * Local ids whose row is still exactly what travelled: the server accepted its
+ * natural key and the on-device stamp has not changed since the dump was built.
+ */
+async function confirmedIds(
+  entries: BackupManifestEntry[],
+  rejected: Set<string>,
+  readStamps: (ids: number[]) => Promise<Array<string | undefined>>,
+) {
+  const accepted = entries.filter((entry) => !rejected.has(entry.key));
+  if (!accepted.length) return new Set<number>();
+  const stamps = await readStamps(accepted.map((entry) => entry.id));
+  const ids = new Set<number>();
+  accepted.forEach((entry, index) => {
+    if (stamps[index] === entry.stamp) ids.add(entry.id);
+  });
+  return ids;
 }
 
 export function readBackupStamp() {

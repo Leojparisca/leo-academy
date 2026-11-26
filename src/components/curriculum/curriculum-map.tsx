@@ -143,10 +143,13 @@ export function CurriculumMap({
 }: {
   teacherMode?: boolean;
 }) {
-  const { curriculum, xpByStudent, activeStudent } = useAcademy();
+  const { curriculum, xpByStudent, activeStudent, progressState, reloadProgress } =
+    useAcademy();
   const [openNode, setOpenNode] = useState<CurriculumNode | null>(null);
   const [previewNode, setPreviewNode] = useState<CurriculumNode | null>(null);
   const [guideNode, setGuideNode] = useState<CurriculumNode | null>(null);
+  const [hideFetchNotice, setHideFetchNotice] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const guideTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -195,6 +198,48 @@ export function CurriculumMap({
 
   return (
     <section aria-labelledby="curriculo">
+      {/* The map is where the student looks when something is missing, so the
+          two network states of §7 also live here, not only in the header. */}
+      {progressState === "loading" && (
+        <div className="mb-4 flex items-center gap-2 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-3.5 py-2.5 text-[11px] text-slate-300">
+          <span className="status-dot animate-dot-pulse shrink-0" aria-hidden />
+          Buscando tu progreso…
+        </div>
+      )}
+
+      {progressState === "error" && !hideFetchNotice && (
+        <div className="mb-4 space-y-2.5 rounded-2xl border border-ember/25 bg-ember/[0.07] px-3.5 py-3">
+          <p className="text-[11px] font-medium leading-snug text-ember">
+            No pudimos traer tu progreso. Tus datos siguen aquí.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={retrying}
+              onClick={async () => {
+                if (retrying) return;
+                setRetrying(true);
+                try {
+                  await reloadProgress();
+                } finally {
+                  setRetrying(false);
+                }
+              }}
+              className="rounded-full border border-white/12 bg-white/[0.06] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-slate-100 disabled:opacity-50"
+            >
+              {retrying ? "Buscando…" : "Reintentar"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setHideFetchNotice(true)}
+              className="rounded-full px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-300"
+            >
+              Seguir practicando
+            </button>
+          </div>
+        </div>
+      )}
+
       <div
         className="space-y-4"
         inert={openNode || guideNode || previewNode ? true : undefined}

@@ -19,11 +19,12 @@ import {
 } from "@/lib/academy";
 import {
   getLocalDb,
+  hydrateFromServer,
   markBackupSynced,
   markQueueEntry,
   pendingMutationCount,
   queueMutation,
-  readBackupDump,
+  readBackupPayload,
   readBackupStamp,
   readBackupStats,
   readPracticeQueue,
@@ -37,12 +38,19 @@ import {
   type LocalSkillScore,
   type PracticePayload,
 } from "@/lib/local-db";
-import type {
-  BackupState,
-  BackupSummary,
-  LocalBackupStats,
+import {
+  toLocalScoreRows,
+  toLocalXpRows,
+  type StudentProgressPackage,
+} from "@/lib/progress-package";
+import {
+  describeBackupTruncation,
+  type BackupState,
+  type BackupSummary,
+  type LocalBackupStats,
 } from "@/lib/backup";
 import {
+  fetchStudentProgressAction,
   fetchStudentsAction,
   logPracticeAction,
   syncPracticeSessionsAction,
@@ -106,6 +114,14 @@ type AcademyContextValue = {
   pendingSync: number;
   syncState: "idle" | "syncing" | "offline" | "error";
   dataSource: "local" | "server";
+  /**
+   * Progress hydration, which is a different thing from "the profile arrived".
+   * `true` only once `lesson_progress`/`curriculum_progress` were read from the
+   * academy or merged with them; it is what authorises "Todo guardado".
+   */
+  progressState: "idle" | "loading" | "ready" | "error";
+  hydrated: boolean;
+  reloadProgress: () => Promise<void>;
   backupState: BackupState;
   backupStats: LocalBackupStats | null;
   lastBackupAt: string | null;
@@ -139,13 +155,40 @@ export function AcademyProvider({
   children,
   teacherMode = false,
   initialStudent = null,
+  initialProgress = null,
 }: {
   children: React.ReactNode;
   teacherMode?: boolean;
   initialStudent?: Student | null;
+  /**
+   * Progress read on the server during the layout render. Seeding the very
+   * first paint from it is what removes the "empty map" flash on a new device.
+   */
+  initialProgress?: StudentProgressPackage | null;
 }) {
   const pathname = usePathname();
   const studentMode = Boolean(initialStudent) && !teacherMode;
+
+  const seedScores = useMemo(
+    () =>
+      initialProgress ? toLocalScoreRows(initialProgress, initialProgress.student.id) : [],
+    [initialProgress],
+  );
+  const seedXp = useMemo(
+    () =>
+      initialProgress ? toLocalXpRows(initialProgress, initialProgress.student.id) : [],
+    [initialProgress],
+  );
+  const seedXpTotal = useMemo(
+    () =>
+      initialProgress
+        ? initialProgress.xpLedger.reduce(
+            (total, row) => total + row.amount,
+            0,
+          )
+        : 0,
+    [initialProgress],
+  );
 
   const [students, setStudents] = useState<Student[]>(
     initialStudent ? [initialStudent] : [],
@@ -159,14 +202,48 @@ export function AcademyProvider({
   const [syncState, setSyncState] = useState<
     "idle" | "syncing" | "offline" | "error"
   >("idle");
-  const [dataSource, setDataSource] = useState<"local" | "server">("local");
+  const [dataSource, setDataSource] = useState<"local" | "server">(
+    initialStudent ? "server" : "local",
+  );
+  const [progressState, setProgressState] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >(initialProgress ? "ready" : initialStudent ? "loading" : "idle");
   const [backupState, setBackupState] = useState<BackupState>("device");
   const [backupStats, setBackupStats] = useState<LocalBackupStats | null>(null);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
-  const [progress, setProgress] = useState<LocalLessonProgress[]>([]);
-  const [skillScores, setSkillScores] = useState<LocalSkillScore[]>([]);
-  const [curriculum, setCurriculum] = useState<LocalCurriculumProgress[]>([]);
-  const [xpByStudent, setXpByStudent] = useState<Record<string, number>>({});
+  const [progress, setProgress] = useState<LocalLessonProgress[]>(
+    initialProgress
+      ? initialProgress.lessonProgress.map((row) => ({
+          studentId: initialProgress.student.id,
+          levelId: row.levelId,
+          status: row.status,
+          progress: row.progress,
+          minutesPracticed: row.minutesPracticed,
+          updatedAt: row.updatedAt,
+          synced: 1 as const,
+        }))
+      : [],
+  );
+  const [skillScores, setSkillScores] = useState<LocalSkillScore[]>(seedScores);
+  const [curriculum, setCurriculum] = useState<LocalCurriculumProgress[]>(
+    initialProgress
+      ? initialProgress.curriculumProgress.map((row) => ({
+          studentId: initialProgress.student.id,
+          nodeId: row.nodeId,
+          branch: row.branch,
+          level: row.level,
+          stars: row.stars,
+          accuracy: row.accuracy,
+          updatedAt: row.updatedAt,
+          synced: 1 as const,
+        }))
+      : [],
+  );
+  const [xpByStudent, setXpByStudent] = useState<Record<string, number>>(
+    initialProgress
+      ? { [initialProgress.student.id]: seedXpTotal }
+      : {},
+  );
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const bootedRef = useRef(false);
@@ -297,8 +374,78 @@ export function AcademyProvider({
       setXpByStudent(xpTotals);
       await refreshBackupStatus();
     },
-    [refreshBackupStatus],
+    [refreshBackupStatus, teacherMode],
   );
+
+  /**
+   * Reads the student's progress from the academy and merges it into Dexie.
+   *
+   * The profile alone never counts as hydration: `progressState` only reaches
+   * `ready` when the progress tables were read, and it is the single fact the
+   * header uses to decide whether it may say "Todo guardado".
+   */
+  const hydrateProgress = useCallback(
+    async (options?: { quiet?: boolean }) => {
+      // Teacher devices read the roster, not one student's progress.
+      if (teacherMode) return;
+      if (offlineRef.current) return;
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        setProgressState((current) =>
+          current === "ready" ? current : "error",
+        );
+        return;
+      }
+
+      setProgressState((current) =>
+        current === "ready" ? current : "loading",
+      );
+
+      const result = await fetchStudentProgressAction();
+      if (!result.ok) {
+        setProgressState("error");
+        if (!options?.quiet) {
+          notify(
+            "No pudimos traer tu progreso. Tus datos siguen aquí.",
+            "warning",
+          );
+        }
+        return;
+      }
+
+      const merged = await hydrateFromServer(result.data);
+      if (activeStudentId) await loadLocalSnapshot(activeStudentId);
+      setDataSource("server");
+      setProgressState("ready");
+
+      // §7 conflict copy: this phone really was behind the academy and the
+      // merge moved it forward. A brand-new device has nothing to conflict
+      // with, so `hadLocalProgress` keeps the toast silent there.
+      if (
+        merged.conflict.hadLocalProgress &&
+        merged.conflict.remoteAhead > 0 &&
+        !options?.quiet
+      ) {
+        notify(
+          "Este teléfono tenía avance más antiguo. Conservamos el más avanzado.",
+          "info",
+        );
+      }
+    },
+    [activeStudentId, loadLocalSnapshot, notify, teacherMode],
+  );
+
+  /** Manual recovery: the "Reintentar" of the error and offline states. */
+  const reloadProgress = useCallback(async () => {
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      setProgressState((current) => (current === "ready" ? current : "error"));
+      notify("Guardado aquí. Se enviará cuando vuelva el internet.", "warning");
+      return;
+    }
+    // Retrying is an explicit attempt to reach the academy, so the automatic
+    // "sin luz" flag is cleared — the student's own toggle is not.
+    offlineRef.current = false;
+    await hydrateProgress();
+  }, [hydrateProgress, notify]);
 
   const flushQueue = useCallback(async () => {
     if (typeof navigator !== "undefined" && !navigator.onLine) {
@@ -320,13 +467,28 @@ export function AcademyProvider({
         setSyncState("error");
         return;
       }
+      const rejected = new Set(result.data.rejectedClientIds);
       for (const entry of queue) {
-        await markQueueEntry(entry.id, "completed");
+        // A refused session is never deleted: it stays on the device as
+        // `failed` so the teacher can see it and no retry loop is created.
+        await markQueueEntry(
+          entry.id,
+          rejected.has(entry.payload.clientId) ? "failed" : "completed",
+        );
       }
       const remaining = await pendingMutationCount();
       setPendingSync(remaining);
       setSyncState("idle");
-      if (result.data.synced > 0) {
+      if (rejected.size > 0) {
+        notify(
+          `${rejected.size} ${
+            rejected.size === 1
+              ? "sesión quedó en el teléfono"
+              : "sesiones quedaron en el teléfono"
+          }: la academia no reconoció al alumno o el nivel. No se borró nada.`,
+          "warning",
+        );
+      } else if (result.data.synced > 0) {
         notify(
           `${result.data.synced} ${
             result.data.synced === 1 ? "sesión sincronizada" : "sesiones sincronizadas"
@@ -367,12 +529,15 @@ export function AcademyProvider({
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    // StrictMode mounts, unmounts and remounts this effect in development while
+    // keeping the same component instance. A `cancelled` flag would abort the
+    // first pass at its first await and the guard below would refuse the second
+    // one, leaving boot half-done: profile painted, cached progress ignored.
+    // Boot is idempotent, so it runs to completion exactly once instead.
+    if (bootedRef.current) return;
+    bootedRef.current = true;
 
     async function boot() {
-      if (bootedRef.current) return;
-      bootedRef.current = true;
-
       if (!teacherMode && !initialStudent) {
         setSyncState("offline");
         setDataSource("local");
@@ -392,9 +557,28 @@ export function AcademyProvider({
 
       try {
         await seedLocalDb();
+
+        if (initialProgress) {
+          // A brand-new device: write what the server already sent before the
+          // first paint of the map, so no node renders locked by accident.
+          try {
+            const seeded = await hydrateFromServer(initialProgress);
+            if (
+              seeded.conflict.hadLocalProgress &&
+              seeded.conflict.remoteAhead > 0
+            ) {
+              notify(
+                "Este teléfono tenía avance más antiguo. Conservamos el más avanzado.",
+                "info",
+              );
+            }
+          } catch {
+            // The cache is unavailable; the seeded React state still renders.
+          }
+        }
+
         const db = getLocalDb();
         const bootStudents = await db.students.toArray();
-        if (cancelled) return;
 
         const nextId = initialStudent
           ? initialStudent.id
@@ -413,6 +597,9 @@ export function AcademyProvider({
           const pending = await pendingMutationCount();
           if (pending > 0) await flushQueue();
           await refreshFromServer();
+          // After the profile merge, read the progress tables themselves: this
+          // is the call that actually unlocks the map on a new device.
+          await hydrateProgress({ quiet: initialProgress !== null });
         } else {
           setSyncState("offline");
         }
@@ -423,11 +610,10 @@ export function AcademyProvider({
     }
 
     void boot();
-    return () => {
-      cancelled = true;
-    };
   }, [
     flushQueue,
+    hydrateProgress,
+    initialProgress,
     initialStudent,
     loadLocalSnapshot,
     notify,
@@ -570,9 +756,9 @@ export function AcademyProvider({
   );
 
   const sendLiveEvent = useCallback(
-    (skill: Skill, score: number, exercise: string) => {
+    (skill: Skill, score: number, exercise: string, clientId?: string) => {
       void pushLive("exercise-complete", {
-        clientId: uid("live"),
+        clientId: clientId ?? uid("live"),
         skill,
         score: Math.round(score),
         exercise,
@@ -678,6 +864,7 @@ export function AcademyProvider({
         source: "lesson",
         createdAt,
         synced: 0,
+        clientId,
       });
       await db.students.put(nextStudent);
       setStudents((previous) =>
@@ -700,12 +887,17 @@ export function AcademyProvider({
 
       await loadLocalSnapshot(activeStudent.id);
       setPendingSync(await pendingMutationCount());
-      sendLiveEvent(skill, safeScore, `Sesión · ${getLevel(activeStudent.currentLevel).title}`);
+      sendLiveEvent(
+        skill,
+        safeScore,
+        `Sesión · ${getLevel(activeStudent.currentLevel).title}`,
+        clientId,
+      );
 
       if (!quiet) {
         notify(
           queued
-            ? `Sesión de ${safeMinutes} min guardada sin luz. Se sincronizará al volver la conexión.`
+            ? `Sesión de ${safeMinutes} min. Guardado aquí. Se enviará cuando vuelva el internet.`
             : `Sesión de ${safeMinutes} min enviada a la academia.`,
           queued ? "warning" : "success",
         );
@@ -724,6 +916,13 @@ export function AcademyProvider({
     async ({ nodeId, stars, accuracy }: CurriculumResultInput) => {
       if (!activeStudent) return { stars, accuracy, xp: 0 };
       const node = getCurriculumNode(nodeId);
+      if (!node) {
+        notify(
+          "No encontramos esa lección en el mapa. No se guardó nada.",
+          "warning",
+        );
+        return { stars, accuracy, xp: 0 };
+      }
       const skill: Skill =
         node.branch === "ritmo"
           ? "rhythm"
@@ -739,6 +938,7 @@ export function AcademyProvider({
         xp,
       });
 
+      const clientId = uid("evt");
       const db = getLocalDb();
       await db.skillScores.add({
         studentId: activeStudent.id,
@@ -747,19 +947,27 @@ export function AcademyProvider({
         source: "lesson",
         createdAt: new Date().toISOString(),
         synced: 0,
+        clientId,
       });
 
       await loadLocalSnapshot(activeStudent.id);
-      sendLiveEvent(skill, accuracy, node.title);
+      sendLiveEvent(skill, accuracy, node.title, clientId);
+
+      // Finishing a lesson offline is the exact moment §7 asks to say out loud
+      // that nothing was lost. The wording is fixed; do not paraphrase it.
+      const offline =
+        offlineMode || (typeof navigator !== "undefined" && !navigator.onLine);
       notify(
-        `${node.title} sellado · +${xp} XP · ${saved.stars} ${
-          saved.stars === 1 ? "estrella" : "estrellas"
-        }.`,
-        "success",
+        offline
+          ? `${node.title} sellado · +${xp} XP. Guardado aquí. Se enviará cuando vuelva el internet.`
+          : `${node.title} sellado · +${xp} XP · ${saved.stars} ${
+              saved.stars === 1 ? "estrella" : "estrellas"
+            }.`,
+        offline ? "warning" : "success",
       );
       return { stars: saved.stars, accuracy: saved.accuracy, xp };
     },
-    [activeStudent, loadLocalSnapshot, notify, sendLiveEvent],
+    [activeStudent, loadLocalSnapshot, notify, offlineMode, sendLiveEvent],
   );
 
   const recordGameResult = useCallback(
@@ -767,6 +975,7 @@ export function AcademyProvider({
       if (!activeStudent) return;
       const db = getLocalDb();
       const createdAt = new Date().toISOString();
+      const clientId = uid("evt");
       await db.skillScores.add({
         studentId: activeStudent.id,
         skill,
@@ -774,6 +983,7 @@ export function AcademyProvider({
         source: "game",
         createdAt,
         synced: 0,
+        clientId,
       });
       await appendXp({
         studentId: activeStudent.id,
@@ -782,7 +992,7 @@ export function AcademyProvider({
         detail,
       });
       await loadLocalSnapshot(activeStudent.id);
-      sendLiveEvent(skill, accuracy, detail);
+      sendLiveEvent(skill, accuracy, detail, clientId);
       notify(`${detail} · +${Math.round(xp)} XP guardados.`, "success");
     },
     [activeStudent, loadLocalSnapshot, notify, sendLiveEvent],
@@ -810,7 +1020,7 @@ export function AcademyProvider({
     }
 
     try {
-      const dump = await readBackupDump();
+      const { dump, manifest, truncated } = await readBackupPayload();
       const result = await syncBackupAction(dump);
 
       if (!result.ok) {
@@ -819,21 +1029,40 @@ export function AcademyProvider({
         return null;
       }
 
-      await markBackupSynced();
+      await markBackupSynced(result.data, manifest);
       writeBackupStamp(result.data.syncedAt);
       setLastBackupAt(result.data.syncedAt);
       setBackupStats(await readBackupStats());
       setBackupState("synced");
       setPendingSync(await pendingMutationCount());
 
-      notify(
-        result.data.total > 0
-          ? `${result.data.total} ${
-              result.data.total === 1 ? "registro blindado" : "registros blindados"
-            } en SQLite.`
-          : "El servidor ya estaba al día. Respaldo verificado.",
-        "success",
-      );
+      const warnings: string[] = [];
+      const truncation = describeBackupTruncation(truncated);
+      if (truncation) warnings.push(truncation);
+      if (result.data.skipped > 0) {
+        warnings.push(
+          `${result.data.skipped} ${
+            result.data.skipped === 1
+              ? "registro quedó en este teléfono"
+              : "registros quedaron en este teléfono"
+          }: la academia no reconoció al alumno o el nivel. Nada se borró.`,
+        );
+      }
+
+      if (warnings.length) {
+        notify(warnings.join(" "), "warning");
+      } else {
+        notify(
+          result.data.total > 0
+            ? `${result.data.total} ${
+                result.data.total === 1
+                  ? "registro blindado"
+                  : "registros blindados"
+              } en SQLite.`
+            : "El servidor ya estaba al día. Respaldo verificado.",
+          "success",
+        );
+      }
 
       return result.data;
     } catch {
@@ -865,6 +1094,9 @@ export function AcademyProvider({
       pendingSync,
       syncState,
       dataSource,
+      progressState,
+      hydrated: progressState === "ready",
+      reloadProgress: reloadProgress,
       backupState,
       backupStats,
       lastBackupAt,
@@ -899,6 +1131,8 @@ export function AcademyProvider({
       pendingSync,
       syncState,
       dataSource,
+      progressState,
+      reloadProgress,
       backupState,
       backupStats,
       lastBackupAt,

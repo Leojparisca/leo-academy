@@ -7,6 +7,7 @@
  */
 
 import { z } from "zod";
+import type { BackupRejections } from "@/lib/sync-keys";
 
 export const BACKUP_VERSION = 1 as const;
 export const BACKUP_STAMP_KEY = "leo.lastBackupAt";
@@ -24,6 +25,40 @@ export const BACKUP_LIMITS = {
   xpLedger: 2000,
   practiceSessions: 100,
 } as const;
+
+/** Human wording for the truncation warning the teacher sees. */
+export const BACKUP_LIMIT_LABELS: Record<keyof typeof BACKUP_LIMITS, string> = {
+  students: "alumnos",
+  lessonProgress: "lecciones",
+  skillScores: "puntuaciones",
+  curriculumProgress: "nodos del mapa",
+  xpLedger: "movimientos de XP",
+  practiceSessions: "sesiones de práctica",
+};
+
+export type BackupTruncation = {
+  table: keyof typeof BACKUP_LIMITS;
+  total: number;
+  kept: number;
+};
+
+/**
+ * The backup never drops data, but it does cap how much leaves in one trip.
+ * Whenever a ceiling is hit the user must be told, in plain language, that the
+ * overflow stayed on the device instead of vanishing.
+ */
+export function describeBackupTruncation(
+  truncated: BackupTruncation[],
+): string | null {
+  if (!truncated.length) return null;
+  const detail = truncated
+    .map(
+      (entry) =>
+        `${BACKUP_LIMIT_LABELS[entry.table]}: ${entry.kept} de ${entry.total}`,
+    )
+    .join("; ");
+  return `El respaldo llevó solo lo más reciente (${detail}). Lo demás sigue guardado en este teléfono y viajará en el próximo respaldo.`;
+}
 
 const isoStamp = z.string().min(8).max(40);
 const studentId = z
@@ -69,6 +104,8 @@ export const backupSkillScoreSchema = z.object({
   score: z.number().int().min(0).max(100),
   source: z.enum(["lesson", "game", "teacher"]),
   createdAt: isoStamp,
+  /** Present on rows written after the canonical-id migration. */
+  clientId: z.string().min(8).max(80).optional(),
 });
 
 export const backupCurriculumSchema = z.object({
@@ -87,6 +124,8 @@ export const backupXpSchema = z.object({
   source: z.enum(["lesson", "game", "group"]),
   detail: z.string().max(200),
   createdAt: isoStamp,
+  /** Present on rows written after the canonical-id migration. */
+  clientId: z.string().min(8).max(80).optional(),
 });
 
 export const backupPracticeSchema = z.object({
@@ -135,7 +174,14 @@ export type BackupSummary = {
   curriculumProgress: number;
   xpLedger: number;
   practiceSessions: number;
+  /** Total rows the server refused, kept for the existing UI counters. */
   skipped: number;
+  /**
+   * Natural keys of the refused rows, per table. The device marks a row as
+   * synced only when its key is absent here, which is what makes the
+   * zero-loss invariant enforceable instead of aspirational.
+   */
+  rejected: BackupRejections;
   total: number;
   syncedAt: string;
 };

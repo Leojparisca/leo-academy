@@ -21,14 +21,21 @@ import {
 
 type Mode = "login" | "create" | "created";
 
+/**
+ * The academy issues 4-letter codes, but `loginStudentAction` accepts 4–8 and
+ * `newStudentCode` falls back to a 6-character code in the (rare) collision
+ * case. Capturing only 4 would make that account impossible to open, so the
+ * row starts at four boxes and grows to eight when a longer code appears.
+ */
 const CODE_LENGTH = 4;
+const CODE_MAX_LENGTH = 8;
 
-function splitCode(value: string) {
+function splitCode(value: string, length = CODE_LENGTH) {
   const clean = value
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "")
-    .slice(0, CODE_LENGTH);
-  return Array.from({ length: CODE_LENGTH }, (_, index) => clean[index] ?? "");
+    .slice(0, CODE_MAX_LENGTH);
+  return Array.from({ length }, (_, index) => clean[index] ?? "");
 }
 
 export function StudentWelcome() {
@@ -43,17 +50,31 @@ export function StudentWelcome() {
   const boxesRef = useRef<Array<HTMLInputElement | null>>([]);
 
   const code = digits.join("");
+  const boxCount = digits.length;
 
   const focusBox = (index: number) => {
-    const next = Math.max(0, Math.min(CODE_LENGTH - 1, index));
+    const next = Math.max(0, Math.min(digits.length - 1, index));
     boxesRef.current[next]?.focus();
     boxesRef.current[next]?.select();
   };
 
   const setCode = (value: string) => {
-    const next = splitCode(value);
+    const clean = value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    // Grow the row only when the code really needs it; never shrink below 4.
+    const length = Math.min(
+      CODE_MAX_LENGTH,
+      Math.max(CODE_LENGTH, clean.length),
+    );
+    const next = splitCode(clean, length);
     setDigits(next);
     return next;
+  };
+
+  const expandBoxes = () => {
+    if (boxCount >= CODE_MAX_LENGTH) return;
+    const next = [...digits, ...Array.from({ length: CODE_MAX_LENGTH - boxCount }, () => "")];
+    setDigits(next);
+    window.setTimeout(() => focusBox(CODE_LENGTH), 0);
   };
 
   const handleDigit = (index: number, raw: string) => {
@@ -73,7 +94,7 @@ export function StudentWelcome() {
     const next = [...digits];
     next[index] = clean;
     setDigits(next);
-    if (index < CODE_LENGTH - 1) focusBox(index + 1);
+    if (index < boxCount - 1) focusBox(index + 1);
   };
 
   const handleKey = (
@@ -94,8 +115,8 @@ export function StudentWelcome() {
   const enter = async (event?: React.FormEvent) => {
     event?.preventDefault();
     if (busy) return;
-    if (code.length < 4) {
-      setError("Escribe las 4 letras de tu código.");
+    if (code.length < CODE_LENGTH) {
+      setError(`Escribe las ${CODE_LENGTH} letras de tu código.`);
       return;
     }
     setBusy(true);
@@ -210,7 +231,10 @@ export function StudentWelcome() {
               </p>
 
               <div className="mt-3 grid grid-cols-4 gap-2">
-                {splitCode(newCode).map((digit, index) => (
+                {splitCode(
+                  newCode,
+                  Math.min(CODE_MAX_LENGTH, Math.max(CODE_LENGTH, newCode.length)),
+                ).map((digit, index) => (
                   <span
                     key={index}
                     className="grid h-[58px] place-items-center rounded-2xl border border-sky-400/30 bg-sky-400/[0.08] text-[26px] font-bold text-white shadow-[0_0_18px_rgba(56,189,248,0.18)]"
@@ -336,7 +360,9 @@ export function StudentWelcome() {
                   <span className="text-[11px] font-medium text-slate-300">
                     Código de alumno
                   </span>
-                  <span className="text-[10px] text-slate-500">4 letras</span>
+                  <span className="text-[10px] text-slate-500">
+                    {boxCount === CODE_LENGTH ? `${CODE_LENGTH} letras` : `hasta ${CODE_MAX_LENGTH}`}
+                  </span>
                 </div>
                 <div className="grid grid-cols-4 gap-2">
                   {digits.map((digit, index) => (
@@ -352,12 +378,10 @@ export function StudentWelcome() {
                       onPaste={(event) => {
                         event.preventDefault();
                         const pasted = event.clipboardData.getData("text");
-                        if (pasted) {
-                          setCode(pasted);
-                          focusBox(
-                            Math.min(CODE_LENGTH - 1, splitCode(pasted).join("").length - 1),
-                          );
-                        }
+                        if (!pasted) return;
+                        const next = setCode(pasted);
+                        const filled = next.findIndex((value) => !value);
+                        focusBox(filled === -1 ? next.length - 1 : filled);
                       }}
                       aria-label={`Letra ${index + 1} del código`}
                       inputMode="text"
@@ -365,10 +389,20 @@ export function StudentWelcome() {
                       autoComplete={index === 0 ? "one-time-code" : "off"}
                       maxLength={1}
                       className="otp-box"
-                      required
+                      required={index < CODE_LENGTH}
                     />
                   ))}
                 </div>
+
+                {boxCount === CODE_LENGTH && (
+                  <button
+                    type="button"
+                    onClick={expandBoxes}
+                    className="mt-2 text-[10px] font-medium text-sky-300/80 underline-offset-2 transition-colors hover:text-sky-200 hover:underline"
+                  >
+                    Mi código tiene más de {CODE_LENGTH} letras
+                  </button>
+                )}
               </div>
 
               {error && (

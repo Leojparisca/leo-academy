@@ -19,10 +19,25 @@ import {
   xpLedger,
 } from "@/server/db/schema";
 import { isTeacherAuthenticated } from "@/server/auth/teacher-session";
+import {
+  countRejections,
+  curriculumProgressKey,
+  emptyRejections,
+  lessonProgressKey,
+  practiceSessionKey,
+  scoreRowId,
+  skillScoreKey,
+  xpKey,
+  xpRowId,
+} from "@/lib/sync-keys";
 
 const STATUS_RANK = { locked: 0, current: 1, completed: 2 } as const;
 
-/** Deterministic ids make re-sending the same dump a safe no-op. */
+/**
+ * Fallback for rows written before the canonical `clientId` migration.
+ * New rows carry a client id, so this hash never decides the identity of an
+ * event that also travelled through the live/practice writers.
+ */
 function stableId(prefix: string, ...parts: Array<string | number>) {
   const hash = createHash("sha1")
     .update(parts.join("|"))
@@ -81,6 +96,7 @@ export async function syncBackupAction(
         xpLedger: 0,
         practiceSessions: 0,
         skipped: 0,
+        rejected: emptyRejections(),
         total: 0,
         syncedAt: new Date().toISOString(),
       };
@@ -127,15 +143,18 @@ export async function syncBackupAction(
         }
 
         // The teacher owns identity, level and notes. The device only owns the
-        // measured metrics, and even those never move backwards.
-        const deviceWinsAccuracy = record.totalMinutes >= current.totalMinutes;
+        // measured metrics, and none of them may move backwards: on equal
+        // minutes the server keeps its value, and accuracy never decreases.
+        const deviceWinsMinutes = record.totalMinutes > current.totalMinutes;
         await tx
           .update(students)
           .set({
             streakDays: Math.max(current.streakDays, record.streakDays),
             totalMinutes: Math.max(current.totalMinutes, record.totalMinutes),
             weeklyMinutes: Math.max(current.weeklyMinutes, record.weeklyMinutes),
-            accuracy: deviceWinsAccuracy ? record.accuracy : current.accuracy,
+            accuracy: deviceWinsMinutes
+              ? Math.max(current.accuracy, record.accuracy)
+              : current.accuracy,
             updatedAt: latest(current.updatedAt, record.updatedAt),
           })
           .where(eq(students.id, record.id));
@@ -154,7 +173,7 @@ export async function syncBackupAction(
           !knownStudents.has(record.studentId) ||
           !knownLevels.has(record.levelId)
         ) {
-          counts.skipped += 1;
+          counts.rejected.lessonProgress.push(lessonProgressKey(record));
           continue;
         }
 
@@ -199,20 +218,22 @@ export async function syncBackupAction(
 
       for (const record of dump.skillScores) {
         if (!knownStudents.has(record.studentId)) {
-          counts.skipped += 1;
+          counts.rejected.skillScores.push(skillScoreKey(record));
           continue;
         }
         await tx
           .insert(skillScores)
           .values({
-            id: stableId(
-              "score",
-              record.studentId,
-              record.skill,
-              record.source,
-              record.createdAt,
-              record.score,
-            ),
+            id: record.clientId
+              ? scoreRowId(record.clientId)
+              : stableId(
+                  "score",
+                  record.studentId,
+                  record.skill,
+                  record.source,
+                  record.createdAt,
+                  record.score,
+                ),
             studentId: record.studentId,
             skill: record.skill,
             score: record.score,
@@ -234,7 +255,9 @@ export async function syncBackupAction(
       for (const record of dump.curriculumProgress) {
         const node = CURRICULUM_BY_ID.get(record.nodeId);
         if (!knownStudents.has(record.studentId) || !node) {
-          counts.skipped += 1;
+          counts.rejected.curriculumProgress.push(
+            curriculumProgressKey(record),
+          );
           continue;
         }
 
@@ -271,20 +294,22 @@ export async function syncBackupAction(
 
       for (const record of dump.xpLedger) {
         if (!knownStudents.has(record.studentId)) {
-          counts.skipped += 1;
+          counts.rejected.xpLedger.push(xpKey(record));
           continue;
         }
         await tx
           .insert(xpLedger)
           .values({
-            id: stableId(
-              "xp",
-              record.studentId,
-              record.source,
-              record.createdAt,
-              record.amount,
-              record.detail,
-            ),
+            id: record.clientId
+              ? xpRowId(record.clientId)
+              : stableId(
+                  "xp",
+                  record.studentId,
+                  record.source,
+                  record.createdAt,
+                  record.amount,
+                  record.detail,
+                ),
             studentId: record.studentId,
             amount: record.amount,
             source: record.source,
@@ -301,7 +326,7 @@ export async function syncBackupAction(
           !knownStudents.has(record.studentId) ||
           !knownLevels.has(record.levelId)
         ) {
-          counts.skipped += 1;
+          counts.rejected.practiceSessions.push(practiceSessionKey(record));
           continue;
         }
         // Sessions are immutable log rows. The student's totals were already
@@ -322,6 +347,7 @@ export async function syncBackupAction(
         if (inserted.rowsAffected > 0) counts.practiceSessions += 1;
       }
 
+      counts.skipped = countRejections(counts.rejected);
       counts.total =
         counts.students +
         counts.studentsUpdated +
